@@ -12,6 +12,10 @@ use meow_database::table::TableManager;
 #[command(name = "meowdb-server")]
 #[command(about = "High-Performance UUID-Optimized LSM-Tree Database with Multi-Table, Secondary JSON Ranking, and Full Production Tooling", long_about = None)]
 struct Args {
+    /// Path to TOML configuration file (e.g. meowdb.toml)
+    #[arg(short = 'c', long)]
+    config: Option<PathBuf>,
+
     #[arg(short, long, default_value = "0.0.0.0:7379")]
     bind: SocketAddr,
 
@@ -24,6 +28,14 @@ struct Args {
     /// Optional password authentication
     #[arg(long)]
     require_pass: Option<String>,
+
+    /// Maximum parallel worker threads (default: auto-detected CPU cores)
+    #[arg(long)]
+    max_threads: Option<usize>,
+
+    /// Block cache size in Megabytes (default: 0 = OFF)
+    #[arg(long, default_value_t = 0)]
+    block_cache_mb: usize,
 
     /// MemTable size in Megabytes (MB)
     #[arg(long, default_value_t = 256)]
@@ -41,6 +53,30 @@ struct Args {
     async_fsync: bool,
 }
 
+#[derive(serde::Deserialize, Default)]
+struct TomlConfigFile {
+    server: Option<TomlServerConfig>,
+    storage: Option<TomlStorageConfig>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct TomlServerConfig {
+    bind: Option<String>,
+    http_bind: Option<String>,
+    require_pass: Option<String>,
+    max_threads: Option<usize>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct TomlStorageConfig {
+    data_dir: Option<String>,
+    block_cache_mb: Option<usize>,
+    memtable_size_mb: Option<usize>,
+    compaction_trigger: Option<usize>,
+    commit_delay_us: Option<u64>,
+    async_fsync: Option<bool>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -49,12 +85,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    // Check for TOML config file
+    let config_path = args.config.clone().or_else(|| {
+        let p = PathBuf::from("meowdb.toml");
+        if p.exists() { Some(p) } else { None }
+    });
+
+    if let Some(cfg_file) = config_path {
+        if let Ok(content) = std::fs::read_to_string(&cfg_file) {
+            info!("Loading configuration from {}", cfg_file.display());
+            if let Ok(toml_cfg) = toml::from_str::<TomlConfigFile>(&content) {
+                if let Some(s) = toml_cfg.server {
+                    if let Some(b) = s.bind { if let Ok(addr) = b.parse() { args.bind = addr; } }
+                    if let Some(hb) = s.http_bind { if let Ok(addr) = hb.parse() { args.http_bind = addr; } }
+                    if let Some(p) = s.require_pass { args.require_pass = Some(p); }
+                    if let Some(t) = s.max_threads { args.max_threads = Some(t); }
+                }
+                if let Some(st) = toml_cfg.storage {
+                    if let Some(d) = st.data_dir { args.data_dir = PathBuf::from(d); }
+                    if let Some(c) = st.block_cache_mb { args.block_cache_mb = c; }
+                    if let Some(m) = st.memtable_size_mb { args.memtable_size_mb = m; }
+                    if let Some(ct) = st.compaction_trigger { args.compaction_trigger = ct; }
+                    if let Some(cd) = st.commit_delay_us { args.commit_delay_us = cd; }
+                    if let Some(af) = st.async_fsync { args.async_fsync = af; }
+                }
+            }
+        }
+    }
     let memtable_bytes = args.memtable_size_mb * 1024 * 1024;
+    let default_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let threads = args.max_threads.unwrap_or(default_threads);
 
     info!("Starting MeowDB server...");
     info!("Data directory: {}", args.data_dir.display());
+    info!("Max worker threads: {}", threads);
     info!("MemTable max size: {} MB ({} bytes)", args.memtable_size_mb, memtable_bytes);
+    info!("Block cache size: {} MB", args.block_cache_mb);
     info!("Group commit delay window: {} µs", args.commit_delay_us);
     info!("Async fsync mode: {}", if args.async_fsync { "ENABLED (High-throughput periodic fsync)" } else { "DISABLED (100% strict durability fsync)" });
     if args.require_pass.is_some() {
@@ -72,6 +140,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.compaction_trigger,
         wal_config,
     ).await?;
+
+    let mut current_conf = table_manager.get_config();
+    current_conf.worker_threads = threads;
+    current_conf.block_cache_mb = args.block_cache_mb;
+    current_conf.auth_password = args.require_pass.clone();
+    table_manager.update_config(current_conf);
 
     // 1. Launch Web UI HTTP Server
     let http_server = HttpServer::new(args.http_bind, table_manager.clone(), args.require_pass.clone());

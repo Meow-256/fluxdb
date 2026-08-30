@@ -9,10 +9,13 @@ use parking_lot::RwLock;
 use tokio::sync::Notify;
 use tracing::{error, info};
 
-use crate::core::types::{OpType, PlayerId, Result, ValueEntry};
+use crate::core::types::{DbError, OpType, PlayerId, Result, ValueEntry};
+use crate::index::QueryFilter;
+use crate::storage::cache::BlockCache;
 use crate::storage::compaction::Compactor;
+use crate::storage::iterator::MergingScanner;
 use crate::storage::memtable::MemTable;
-use crate::storage::sstable::{SsTable, SsTableBuilder};
+use crate::storage::sstable::{CompressionType, SsTable, SsTableBuilder};
 use crate::storage::wal::{WalConfig, WalRecovery, WalWriter};
 
 #[derive(Clone, Debug)]
@@ -43,11 +46,16 @@ pub struct StorageEngine {
     next_sst_id: AtomicU64,
     flush_notify: Arc<Notify>,
     ttls: Arc<RwLock<HashMap<PlayerId, u64>>>,
+    memtable_limit_bytes: Arc<AtomicU64>,
+    block_cache: Arc<BlockCache>,
+    compression_type: Arc<RwLock<CompressionType>>,
 }
 
 impl StorageEngine {
     pub async fn open(config: EngineConfig) -> Result<Arc<Self>> {
         fs::create_dir_all(&config.db_path)?;
+
+        let block_cache = Arc::new(BlockCache::new(0));
 
         // 1. Recover existing SSTables
         let mut existing_sstables = Vec::new();
@@ -61,8 +69,20 @@ impl StorageEngine {
                         if let Ok(id) = file_stem.parse::<u64>() {
                             max_sst_id = max_sst_id.max(id);
                             match SsTable::open(&path, id, 0) {
-                                Ok(sst) => existing_sstables.push(Arc::new(sst)),
-                                Err(e) => error!("Failed to open SSTable {:?}: {}", path, e),
+                                Ok(mut sst) => {
+                                    if sst.is_legacy_version() {
+                                        info!("Upgrading legacy SSTable {:?} to V2 format...", path);
+                                        match sst.upgrade_in_place() {
+                                            Ok(upgraded) => sst = upgraded,
+                                            Err(e) => error!("Failed to upgrade SSTable {:?}: {}", path, e),
+                                        }
+                                    }
+                                    sst.set_block_cache(Some(block_cache.clone()));
+                                    existing_sstables.push(Arc::new(sst));
+                                }
+                                Err(e) => {
+                                    error!("Failed to open SSTable {:?}: {}", path, e);
+                                }
                             }
                         }
                     }
@@ -70,12 +90,12 @@ impl StorageEngine {
             }
         }
 
-        // Sort SSTables newest to oldest (higher ID = newer)
+        // Sort descending by ID (newest SSTable first)
         existing_sstables.sort_by(|a, b| b.id().cmp(&a.id()));
 
-        // 2. Recover from WAL log
+        // 2. Recover MemTable from WAL
         let wal_path = config.db_path.join("wal.log");
-        let (recovered_entries, max_recovered_seq) = WalRecovery::recover(&wal_path)?;
+        let (recovered_entries, last_seq_num) = WalRecovery::recover(&wal_path)?;
 
         let memtable = MemTable::new();
         if !recovered_entries.is_empty() {
@@ -85,21 +105,23 @@ impl StorageEngine {
             }
         }
 
-        let wal = WalWriter::open(
-            &wal_path,
-            max_recovered_seq + 1,
-            config.wal_config.clone(),
-        )?;
+        // 3. Open WAL for writing
+        let wal_writer = WalWriter::open(&wal_path, last_seq_num, config.wal_config)?;
+
+        let memtable_limit_bytes = Arc::new(AtomicU64::new(config.memtable_max_bytes as u64));
 
         let engine = Arc::new(Self {
             config,
-            wal: Arc::new(wal),
+            wal: Arc::new(wal_writer),
             memtable: Arc::new(RwLock::new(memtable)),
             imm_memtables: Arc::new(RwLock::new(Vec::new())),
             sstables: Arc::new(RwLock::new(existing_sstables)),
             next_sst_id: AtomicU64::new(max_sst_id + 1),
             flush_notify: Arc::new(Notify::new()),
             ttls: Arc::new(RwLock::new(HashMap::new())),
+            memtable_limit_bytes,
+            block_cache,
+            compression_type: Arc::new(RwLock::new(CompressionType::Lz4)),
         });
 
         // 3. Start background flush & compaction task
@@ -209,6 +231,28 @@ impl StorageEngine {
         Ok(None)
     }
 
+    /// Range scan keys in ascending sorted order
+    pub fn scan(
+        &self,
+        start_key: Option<PlayerId>,
+        end_key: Option<PlayerId>,
+        limit: usize,
+    ) -> Result<Vec<(PlayerId, Bytes)>> {
+        let mem = self.memtable.read();
+        let imm = self.imm_memtables.read().clone();
+        let sst = self.sstables.read().clone();
+
+        let raw_entries = MergingScanner::scan(&mem, &imm, &sst, start_key, end_key, limit)?;
+
+        let valid_entries = raw_entries
+            .into_iter()
+            .filter(|(key, _)| !self.is_expired(key))
+            .take(limit)
+            .collect();
+
+        Ok(valid_entries)
+    }
+
     /// Insert or update record with Group-Committed WAL
     #[inline]
     pub async fn put(&self, key: PlayerId, value: Bytes) -> Result<()> {
@@ -227,7 +271,7 @@ impl StorageEngine {
                     timestamp: ts,
                 },
             );
-            memtable.size_bytes() >= self.config.memtable_max_bytes
+            memtable.size_bytes() >= self.memtable_limit_bytes.load(Ordering::Relaxed) as usize
         };
 
         if should_flush {
@@ -255,7 +299,34 @@ impl StorageEngine {
                     timestamp: ts,
                 },
             );
-            memtable.size_bytes() >= self.config.memtable_max_bytes
+            memtable.size_bytes() >= self.memtable_limit_bytes.load(Ordering::Relaxed) as usize
+        };
+
+        if should_flush {
+            self.rotate_memtable().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Atomic batch write for transactions
+    pub async fn apply_batch(&self, operations: Vec<(PlayerId, Option<Bytes>, OpType)>) -> Result<()> {
+        if operations.is_empty() {
+            return Ok(());
+        }
+
+        let (seq, ts) = self.wal.append_batch(operations.clone()).await?;
+
+        let should_flush = {
+            let memtable = self.memtable.read();
+            for (key, val, op) in operations {
+                let entry = match op {
+                    OpType::Put => ValueEntry::put(val.unwrap_or_default(), seq, ts),
+                    OpType::Delete => ValueEntry::delete(seq, ts),
+                };
+                memtable.insert(key, entry);
+            }
+            memtable.size_bytes() >= self.memtable_limit_bytes.load(Ordering::Relaxed) as usize
         };
 
         if should_flush {
@@ -328,8 +399,10 @@ impl StorageEngine {
         let sst_id = self.next_sst_id.fetch_add(1, Ordering::SeqCst);
         let sst_path = self.config.db_path.join(format!("{:06}.sst", sst_id));
 
-        let builder = SsTableBuilder::new(&sst_path, sst_id, 0);
-        if let Some(sstable) = builder.build(memtable.iter())? {
+        let c_type = *self.compression_type.read();
+        let builder = SsTableBuilder::new(&sst_path, sst_id, 0).with_compression_type(c_type);
+        if let Some(mut sstable) = builder.build(memtable.iter())? {
+            sstable.set_block_cache(Some(self.block_cache.clone()));
             let mut sst_guard = self.sstables.write();
             sst_guard.insert(0, Arc::new(sstable)); // Insert as newest
         }
@@ -338,33 +411,54 @@ impl StorageEngine {
     }
 
     /// Trigger multi-way merge compaction of existing SSTables
-    async fn run_compaction(&self) -> Result<()> {
-        let to_compact = {
+    pub async fn run_compaction(&self) -> Result<()> {
+        let plan = {
             let sst_guard = self.sstables.read();
-            if sst_guard.len() < self.config.l0_compaction_trigger {
-                return Ok(());
-            }
-            sst_guard.clone()
+            Compactor::pick_compaction(&sst_guard, self.config.l0_compaction_trigger)
+        };
+
+        let plan = match plan {
+            Some(p) => p,
+            None => return Ok(()),
         };
 
         let new_sst_id = self.next_sst_id.fetch_add(1, Ordering::SeqCst);
+        let c_type = *self.compression_type.read();
 
-        if let Some(merged_sst) = Compactor::compact(
+        if let Some(mut merged_sst) = Compactor::compact_with_compression(
             &self.config.db_path,
-            &to_compact,
+            &plan.inputs,
             new_sst_id,
-            1,
-            false,
+            plan.output_level,
+            plan.is_bottom_level,
+            c_type,
         )? {
-            // Atomically replace compacted SSTables
+            merged_sst.set_block_cache(Some(self.block_cache.clone()));
+            let input_paths: Vec<PathBuf> = plan.inputs.iter().map(|s| s.path().to_path_buf()).collect();
+            let merged_arc = Arc::new(merged_sst);
+
+            // Atomically update SSTable list: remove compacted inputs, insert new merged SSTable
             {
                 let mut sst_guard = self.sstables.write();
-                *sst_guard = vec![Arc::new(merged_sst)];
+                let mut new_list: Vec<Arc<SsTable>> = sst_guard
+                    .iter()
+                    .filter(|s| !input_paths.contains(&s.path().to_path_buf()))
+                    .cloned()
+                    .collect();
+                new_list.push(merged_arc);
+                // Sort by level ASC, then ID DESC
+                new_list.sort_by(|a, b| {
+                    match a.level().cmp(&b.level()) {
+                        std::cmp::Ordering::Equal => b.id().cmp(&a.id()),
+                        ord => ord,
+                    }
+                });
+                *sst_guard = new_list;
             }
 
             // Delete old SSTable files from disk
-            for old_sst in to_compact {
-                let _ = fs::remove_file(old_sst.path());
+            for old_path in input_paths {
+                let _ = fs::remove_file(old_path);
             }
         }
 
@@ -397,6 +491,141 @@ impl StorageEngine {
             }
         }
         total
+    }
+
+    /// Partially update a JSON document field at a specific path
+    pub async fn json_set(&self, key: PlayerId, path: &str, new_val_raw: &str) -> Result<Bytes> {
+        let current_val = self.get(&key)?;
+        let mut root = if let Some(bytes) = current_val {
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
+        } else {
+            serde_json::Value::Object(serde_json::Map::new())
+        };
+
+        let new_val = QueryFilter::parse_json_value(new_val_raw);
+        QueryFilter::set_json_path(&mut root, path, new_val);
+
+        let updated_bytes = Bytes::from(serde_json::to_vec(&root).map_err(|e| DbError::InvalidCommand(e.to_string()))?);
+        self.put(key, updated_bytes.clone()).await?;
+        Ok(updated_bytes)
+    }
+
+    /// Truncate all records from MemTable and SSTables on disk
+    pub async fn truncate(&self) -> Result<()> {
+        // 1. Reset active and immutable MemTables
+        *self.memtable.write() = MemTable::new();
+        self.imm_memtables.write().clear();
+
+        // 2. Remove SSTable files on disk
+        let sst_list = self.sstables.read().clone();
+        for sst in sst_list.iter() {
+            let _ = fs::remove_file(sst.path());
+        }
+        self.sstables.write().clear();
+
+        // 3. Clear TTLs
+        self.ttls.write().clear();
+
+        // 4. Truncate WAL file
+        let wal_path = self.config.db_path.join("wal.log");
+        let _ = fs::write(&wal_path, b"");
+
+        Ok(())
+    }
+
+    /// Delete all records matching a filter query atomically in batch
+    pub async fn del_where(&self, filter: &QueryFilter) -> Result<usize> {
+        let all_entries = self.scan(None, None, 1_000_000)?;
+        let mut del_ops = Vec::new();
+
+        for (key, val) in all_entries {
+            if filter.matches(&val) {
+                del_ops.push((key, None, OpType::Delete));
+            }
+        }
+
+        let count = del_ops.len();
+        if count > 0 {
+            self.apply_batch(del_ops).await?;
+        }
+        Ok(count)
+    }
+
+    /// Count matching records (or total records if no filter)
+    pub fn count_records(&self, filter: Option<&QueryFilter>) -> Result<usize> {
+        let all_entries = self.scan(None, None, 1_000_000)?;
+        if let Some(f) = filter {
+            Ok(all_entries.into_iter().filter(|(_, val)| f.matches(val)).count())
+        } else {
+            Ok(all_entries.len())
+        }
+    }
+
+    /// Calculate statistical metrics (count, sum, avg, min, max) for a numeric field
+    pub fn calc_stats(&self, field: &str, filter: Option<&QueryFilter>) -> Result<serde_json::Value> {
+        let all_entries = self.scan(None, None, 1_000_000)?;
+        let mut count = 0usize;
+        let mut sum = 0.0f64;
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+
+        for (_, val) in all_entries {
+            if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&val) {
+                if filter.map_or(true, |f| f.matches_value(&parsed)) {
+                    if let Some(num) = QueryFilter::extract_number(&parsed, field) {
+                        count += 1;
+                        sum += num;
+                        min = min.min(num);
+                        max = max.max(num);
+                    }
+                }
+            }
+        }
+
+        let avg = if count > 0 { sum / count as f64 } else { 0.0 };
+        let min_val = if count > 0 { min } else { 0.0 };
+        let max_val = if count > 0 { max } else { 0.0 };
+
+        Ok(serde_json::json!({
+            "field": field,
+            "count": count,
+            "sum": sum,
+            "avg": avg,
+            "min": min_val,
+            "max": max_val,
+        }))
+    }
+
+    /// Dynamically update the in-memory MemTable maximum size limit
+    pub fn set_memtable_limit(&self, max_bytes: usize) {
+        self.memtable_limit_bytes.store(max_bytes as u64, Ordering::Relaxed);
+    }
+
+    /// Access the shared BlockCache for this engine
+    pub fn block_cache(&self) -> Arc<BlockCache> {
+        self.block_cache.clone()
+    }
+
+    /// Set a new shared BlockCache and update all existing SSTables
+    pub fn set_block_cache(&self, cache: Arc<BlockCache>) {
+        let sst_list = self.sstables.read().clone();
+        for sst in sst_list.iter() {
+            // Unsafe or mutable helper to update SSTable cache ref
+            let sst_ptr = Arc::as_ptr(sst) as *mut SsTable;
+            unsafe {
+                (*sst_ptr).set_block_cache(Some(cache.clone()));
+            }
+        }
+    }
+
+    /// Set the block compression algorithm (NONE, LZ4, ZSTD) for subsequent writes
+    pub fn set_compression_type(&self, c_type: CompressionType) {
+        *self.compression_type.write() = c_type;
+    }
+
+    /// Current block compression algorithm for this engine
+    pub fn compression_type(&self) -> CompressionType {
+        *self.compression_type.read()
     }
 
     /// Backup the table's persistent SSTable data to a target directory

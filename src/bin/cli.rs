@@ -50,6 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  MSET <table> <uuid1> <json1> <uuid2> ...   - Insert multiple records");
     println!("  GET <table> <uuid>                         - Fetch record");
     println!("  MGET <table> <uuid1> <uuid2> ...           - Fetch multiple records");
+    println!("  SCAN <table> [start] [end] [limit]         - Range scan sorted records");
+    println!("  FILTER <table> \"<query>\" [limit]            - Filter JSON records by expression");
+    println!("  MULTI / EXEC / DISCARD                     - Atomic transactions");
     println!("  EXISTS <table> <uuid1> ...                 - Check existence");
     println!("  EXPIRE <table> <uuid> <seconds>            - Set TTL");
     println!("  TTL <table> <uuid>                         - Check remaining TTL");
@@ -77,15 +80,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  AUTH <password>                            - Authenticate with server");
             println!("  TABLES                                     - List all tables");
             println!("  CREATE TABLE <name>                        - Create a new table");
-            println!("  SET <table> <uuid> <json>                  - Insert or update record");
+            println!("  DROP TABLE <name>                          - Drop table and delete all its files");
+            println!("  TRUNCATE TABLE <name>                      - Truncate all records from table");
+            println!("  SET <table> <uuid> <json>                  - Insert or update full record");
+            println!("  JSON_SET <table> <uuid> <path> <value>     - Partial update specific JSON property");
             println!("  MSET <table> <uuid1> <json1> ...           - Batch insert records");
             println!("  GET <table> <uuid>                         - Point lookup by UUID");
             println!("  MGET <table> <uuid1> <uuid2> ...           - Batch lookup multiple UUIDs");
-            println!("  DEL <table> <uuid>                         - Delete record");
+            println!("  SCAN <table> [start] [end] [limit]         - Range scan sorted records");
+            println!("  FILTER <table> \"<query>\" [limit]            - Filter JSON records by expression");
+            println!("  COUNT <table> [\"<query>\"]                  - Count matching or total records");
+            println!("  STATS <table> <field> [\"<query>\"]          - Statistical metrics (sum, avg, min, max)");
+            println!("  DEL_WHERE <table> \"<query>\"                - Conditionally batch delete records");
+            println!("  MULTI                                      - Begin transaction block");
+            println!("  EXEC                                       - Execute queued transaction block");
+            println!("  DISCARD                                    - Cancel queued transaction block");
+            println!("  DEL <table> <uuid>                         - Delete single record");
             println!("  EXISTS <table> <uuid1> [uuid2 ...]         - Check key existence count");
             println!("  EXPIRE <table> <uuid> <seconds>            - Set expiration on record");
             println!("  TTL <table> <uuid>                         - Get remaining time to live");
-            println!("  BACKUP [target_dir]                        - Create snapshot backup");
+            println!("  BACKUP [target_dir]                        - Create instant snapshot hot backup");
             println!("  INDEX CREATE <table> <path>                - Create ranking index on JSON field");
             println!("  TOP <table> <path> [limit]                 - Get top N ranked entries");
             println!("  RANK <table> <path> <uuid>                 - Get rank and score of UUID");
@@ -124,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         } else if line.starts_with('*') {
-            // RESP Array (e.g. from MGET)
+            // RESP Array (e.g. from MGET or EXEC)
             if let Ok(count) = line[1..].trim().parse::<usize>() {
                 println!("Array [{} items]:", count);
                 for i in 0..count {
@@ -141,6 +155,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = server_lines.read_exact(&mut crlf).await;
                             println!("  {}) {}", i + 1, String::from_utf8_lossy(&buf));
                         }
+                    } else {
+                        println!("  {}) {}", i + 1, item_line.trim());
                     }
                 }
             }

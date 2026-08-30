@@ -1,25 +1,36 @@
-# Build stage
-FROM rust:1.80-slim-bullseye AS builder
+# ==========================================
+# MeowDB Multi-stage Production Dockerfile
+# ==========================================
+FROM rust:1.80-bullseye AS builder
 
 WORKDIR /usr/src/meowdb
-COPY . .
 
+# Cache dependencies
+COPY Cargo.toml ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release || true
+
+# Build complete binary suite
+COPY . .
 RUN cargo build --release
 
-# Runtime stage
+# Runtime image
 FROM debian:bullseye-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
 COPY --from=builder /usr/src/meowdb/target/release/meowdb-server /usr/local/bin/
 COPY --from=builder /usr/src/meowdb/target/release/meowdb-cli /usr/local/bin/
 COPY --from=builder /usr/src/meowdb/target/release/meowdb-bench /usr/local/bin/
+COPY --from=builder /usr/src/meowdb/target/release/meowdb-dump /usr/local/bin/
+COPY --from=builder /usr/src/meowdb/target/release/meowdb-load /usr/local/bin/
+COPY --from=builder /usr/src/meowdb/target/release/meowdb-check /usr/local/bin/
+COPY meowdb.toml /app/meowdb.toml
 
-# Persistent data volume
-VOLUME ["/data"]
-ENV RUST_LOG=info
+VOLUME [ "/app/data" ]
 
 EXPOSE 7379 7380
 
-ENTRYPOINT ["meowdb-server", "--bind", "0.0.0.0:7379", "--http-bind", "0.0.0.0:7380", "--data-dir", "/data"]
+ENTRYPOINT ["meowdb-server"]
+CMD ["--config", "/app/meowdb.toml"]

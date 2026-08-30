@@ -3,16 +3,11 @@ version: '3.8'
 services:
   meowdb:
     build: .
-    container_name: meowdb
+    container_name: meowdb-server
     ports:
-      - "7379:7379"
-      - "7380:7380"
+      - "7379:7379"   # Binary RESP / Redis-compatible Protocol
+      - "7380:7380"   # HTTP REST API & Web Dashboard & /metrics
     volumes:
-      - meowdb_data:/data
+      - ./data:/app/data
+      - ./meowdb.toml:/app/meowdb.toml
     restart: unless-stopped
-    environment:
-      - RUST_LOG=info
-
-volumes:
-  meowdb_data:
-    driver: local

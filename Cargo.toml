@@ -20,6 +20,9 @@ thiserror = "1.0"
 byteorder = "1.5"
 tempfile = "3.10"
 rand = "0.8"
+lz4_flex = "0.11"
+zstd = "0.13"
+toml = "0.8"
 
 [[bin]]
 name = "meowdb-server"
@@ -32,3 +35,15 @@ path = "src/bin/cli.rs"
 [[bin]]
 name = "meowdb-bench"
 path = "src/bin/bench.rs"
+
+[[bin]]
+name = "meowdb-dump"
+path = "src/bin/dump.rs"
+
+[[bin]]
+name = "meowdb-load"
+path = "src/bin/load.rs"
+
+[[bin]]
+name = "meowdb-check"
+path = "src/bin/check.rs"

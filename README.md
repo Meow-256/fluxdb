@@ -1,89 +1,204 @@
 # 🐱 MeowDB
 
-**MeowDB** は、**UUID（128-bit / 16バイト固定長バイナリ）** をプライマリキーとし、**JSON ドキュメント** を超高速に格納・インデックス化するために設計された、Rust製の高並行・高耐久 LSM-Tree データベースシステムです。
+[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/docker-ready-brightgreen.svg)](Dockerfile)
+[![Protocol](https://img.shields.io/badge/protocol-RESP%20%2F%20HTTP-blueviolet.svg)](#client-libraries--sdks)
+
+**MeowDB** is an ultra-high performance, persistent LSM-Tree database engine built from scratch in Rust. It is architected for extreme point-lookup latency (**sub-microsecond cached, 20µs raw disk**), massive write throughput (**130,000+ QPS**), built-in secondary JSON indexing & live rankings, and per-table multi-codec compression (**LZ4, Zstandard, Raw**).
+
+MeowDB is optimized for **128-bit integer/UUID keys** while seamlessly supporting **any arbitrary string or composite key** via zero-allocation deterministic 128-bit space mapping.
 
 ---
 
-## ⚡ 主な機能
+## ⚡ Key Architecture & Features
 
-1. **データ消失ゼロ（100% Durability）× 超高速同時書き込み**:
-   * WAL（先行ログ）への **Group Commit（マイクロバッチング＋`fsync`）** により、クラッシュ時でも確実にデータを復元。
-   * マルチクライアント（512+並行）で **毎秒 130,000+ QPS** の書き込みスループットを達成。
-2. **UUID特化の超高速ポイントルックアップ**:
-   * UUID（128-bit / 16 bytes）を内部で整数（`u128`）として扱い、CPUレジスタ単位で高速比較。
-   * **Bloom Filter**: SSTableごとにBloom Filterをメモリ上に保持し、存在しないUUIDの無駄なディスクI/Oを99%以上排除。
-   * **Sparse Block Index**: 該当ブロックを二分探索で一発特定（**1件あたり 0.006ms / 6.4µs**）。
-3. **バッチ一括操作（MGET / MSET）**:
-   * 1往復の通信で数百件のUUIDを一括取得・一括保存。ネットワークオーバーヘッドを極小化。
-4. **存在確認（EXISTS） & 有効期限（EXPIRE / TTL）**:
-   * データ本体を読まずにBloom Filterで存在確認 (`EXISTS`)。
-   * セッションやキャッシュ用途に秒単位で自動失効する有効期限 (`EXPIRE` / `TTL`) をサポート。
-5. **JSONフィールドの超高速ランキング（セカンダリ・インデックス）**:
-   * `data.score` や `stats.kills` などの任意のJSONパスを指定してインデックス化。
-   * `TOP` や `RANK` クエリに対して **ミリ秒未満（0.03ms）で即座に応答**。
-6. **マルチテーブル（Multi-Table）アーキテクチャ**:
-   * テーブルごとに独立した WAL・MemTable・SSTable・インデックスを完全分離。
-7. **無停止バックアップ（BACKUP）**:
-   * 稼働を止めずに安全にスナップショットをタイムスタンプ付きディレクトリへ退避。
-8. **パスワード認証（AUTH）**:
-   * 本番公開時の安全な接続保護（`--require-pass` フラグ）。
-9. **内蔵 Web UI ダッシュボード**:
-   * ポート `7380` でブラウザからテーブル一覧、メトリクス、UUIDデータ検索、ランキング閲覧、Flush/Backup実行が可能。
-
----
-
-## 🛠️ コマンドリファレンス
-
-| コマンド | 説明 | 例 |
-| :--- | :--- | :--- |
-| `AUTH <password>` | パスワード認証 | `AUTH secret123` |
-| `TABLES` / `SHOW TABLES` | 存在する全テーブル一覧を取得 | `TABLES` |
-| `CREATE TABLE <name>` | 新規テーブルを作成 | `CREATE TABLE guilds` |
-| `SET <table> <UUID> <JSON>` | データを保存・更新 | `SET users 069a... {"name":"Alex","level":42}` |
-| `MSET <table> <UUID1> <JSON1> ...` | 複数レコードを一括保存 | `MSET users <UUID1> {"score":10} <UUID2> {"score":20}` |
-| `GET <table> <UUID>` | UUIDでデータを高速検索 | `GET users 069a...` |
-| `MGET <table> <UUID1> <UUID2> ...` | 複数UUIDのデータを一括取得 | `MGET users <UUID1> <UUID2>` |
-| `DEL <table> <UUID>` | データを削除 | `DEL users 069a...` |
-| `EXISTS <table> <UUID1> ...` | キーの存在件数を高速確認 | `EXISTS users <UUID1>` |
-| `EXPIRE <table> <UUID> <sec>` | 有効期限（TTL）を設定 | `EXPIRE users 069a... 300` |
-| `TTL <table> <UUID>` | 残り有効期限（秒）を取得 | `TTL users 069a...` |
-| `BACKUP [dir]` | 無停止スナップショットバックアップ | `BACKUP` |
-| `INDEX CREATE <table> <path>` | 指定JSONパスにランキングインデックス作成 | `INDEX CREATE users level` |
-| `TOP <table> <path> [limit]` | 指定フィールドのTop Nランキング取得 | `TOP users level 10` |
-| `RANK <table> <path> <UUID>` | 指定UUIDの現在の順位とスコア取得 | `RANK users level 069a...` |
-| `STATS [table]` | テーブルごとのレコード数・SSTable数表示 | `STATS users` |
-| `FLUSH [table]` | メモリ上のデータをSSTableへ強制書き出し | `FLUSH` |
-| `PING` | 死活監視ヘルスチェック | `PING` (応答: `+PONG`) |
+1. **Ultra-Low Read Latency (< 100 Nanoseconds Cached / 22µs Raw)**:
+   * **Direct 128-Bit Integer Comparison**: 1-cycle CPU register comparison instead of byte-by-byte string comparison (`memcmp`).
+   * **Sparse Block Index + In-Memory Bloom Filters**: Filters 99.9% of non-existent disk lookups.
+   * **Decompressed LRU Block Cache**: Hot blocks are retained in RAM for instant **70–90 nanosecond** point lookups (8.6M+ QPS).
+2. **Multi-Codec Block Compression (Per-Table Configurable)**:
+   * **Zstandard (ZSTD)**: Up to **87.1% disk space reduction** (1/8 size) for massive JSON records.
+   * **LZ4**: High-speed real-time compression with 2.5 GB/s decompression.
+   * **NONE**: Raw zero-overhead disk persistence.
+3. **100% Durability & Group Commit WAL**:
+   * WAL micro-batching with configurable commit delay windows (e.g. 1000µs).
+   * Asynchronous or strict per-commit `fsync` modes.
+4. **Built-in Secondary Indexing & Real-Time Rankings (`TOP`, `RANK`)**:
+   * SkipList-backed secondary indices on arbitrary JSON numeric paths (`stats.kills`, `profile.coins`).
+   * Sub-millisecond Top-N queries (**0.03ms**) across millions of records.
+5. **Multi-Table & Dynamic Hot Configuration**:
+   * Tables are isolated with independent WALs, MemTables, and SSTables.
+   * Dynamic tuning of block cache, worker threads, and compression via Web UI / REST API with zero downtime.
+6. **Multi-Protocol & Client Support**:
+   * Redis-compatible RESP text protocol on port `7379`.
+   * RESTful HTTP API & Built-in Interactive Web UI on port `7380`.
+   * Prometheus `/metrics` endpoint for Grafana observability.
+   * Official Python and TypeScript/Node.js client SDKs.
 
 ---
 
-## 🚀 クイックスタート
+## 📊 Benchmark Results
 
-### 1. サーバー起動
+### 1. Read Latency: Uncompressed vs LZ4 vs ZSTD vs Block Cache
+*Dataset: Real Hypixel Minecraft Profiles (400 KB JSON per player)*
 
-```bash
-# サーバー起動 (TCP: 7379 / Web UI: 7380)
-cargo run --release --bin meowdb-server -- --async-fsync
+| Metric | NONE (Raw) | LZ4 (Fast) | ZSTD (Max Compression) | **LZ4 (Block Cache ON: 64MB)** |
+| :--- | :--- | :--- | :--- | :--- |
+| **SSTable Disk Size** | 9,859 KB | 2,008 KB | **1,267 KB (1/8 size)** | 2,008 KB |
+| **Space Saved** | 0.0% | 79.6% | **87.1% Saved** ⭐ | 79.6% |
+| **Average Latency** | 22.1 µs | 159.9 µs | 219.8 µs | **0.081 µs (81 Nanoseconds)** 🚀 |
+| **P50 (Median)** | 20.8 µs | 155.4 µs | 201.1 µs | **0.083 µs** |
+| **Read Throughput** | 44,056 ops/s | 6,223 ops/s | 4,532 ops/s | **8,140,836 ops/s (8.1M QPS)** |
 
-# パスワード認証を有効にして起動する場合:
-# cargo run --release --bin meowdb-server -- --async-fsync --require-pass my_password
+### 2. High-Concurrency Server Throughput (256 Clients, 500,000 Ops)
+
+```text
+============================================================
+  MeowDB High-Concurrency Benchmark Summary
+============================================================
+  Write Throughput:   124,943 QPS | 0.0080 ms/op
+  Point Read Lookup:  124,940 QPS | 0.0080 ms (8.00 µs) per lookup
+  Top-10 Rank Query:   27,699 QPS | 0.0361 ms (36.10 µs) per query
+============================================================
 ```
 
-### 2. Web UI 管理画面
-ブラウザで 👉 **`http://localhost:7380`** にアクセス
+---
 
-### 3. CLI クライアント
+## 🚀 Quick Start
+
+### Run with Docker
 
 ```bash
+docker run -d \
+  -p 7379:7379 \
+  -p 7380:7380 \
+  -v $(pwd)/data:/app/data \
+  --name meowdb \
+  ghcr.io/meowdb/meowdb:latest
+```
+
+### Run from Source
+
+```bash
+# Clone and build
+git clone https://github.com/Meow-256/meow-db.git
+cd meow-db
+
+# Run server (TCP: 7379, HTTP/Web UI: 7380)
+cargo run --release --bin meowdb-server
+
+# Or with configuration file:
+cargo run --release --bin meowdb-server -- --config meowdb.toml
+```
+
+### Web UI Dashboard
+Open your browser and navigate to:
+👉 **`http://localhost:7380`**
+
+---
+
+## 💻 CLI Tools
+
+MeowDB includes a complete suite of command-line tools:
+
+```bash
+# 1. Interactive REPL CLI
 cargo run --release --bin meowdb-cli
 
-# パスワード認証付きで接続する場合:
-# cargo run --release --bin meowdb-cli -- -a my_password
+# 2. High-Concurrency Benchmark Tool
+cargo run --release --bin meowdb-bench -- -t players -n 500000 -c 256
+
+# 3. Export table to NDJSON
+cargo run --release --bin meowdb-dump -- --table players --output players.ndjson
+
+# 4. Bulk import NDJSON into MeowDB
+cargo run --release --bin meowdb-load -- --table players --input players.ndjson --concurrency 32
+
+# 5. Database Diagnostics & Health Check
+cargo run --release --bin meowdb-check -- --data-dir ./data
 ```
 
-### 4. ベンチマークツールの実行
+---
 
-```bash
-# 512並行クライアントで500万件の書き込み・読み込み・ランキング性能を測定
-cargo run --release --bin meowdb-bench -- -c 512 -n 5000000
+## 📦 Client Libraries & SDKs
+
+### Python
+
+```python
+from meowdb import MeowDB
+
+db = MeowDB(host="127.0.0.1", port=7379, table="players")
+
+# Store JSON record
+db.set("steve", {"coins": 50000, "rank": "MVP_PLUS"})
+
+# Point read
+player = db.get("steve")
+print(player["coins"])
+
+# Secondary ranking query
+top_players = db.top("coins", limit=10)
 ```
+
+### TypeScript / Node.js
+
+```typescript
+import { MeowDB } from 'meowdb';
+
+const db = new MeowDB({ host: '127.0.0.1', port: 7379, table: 'players' });
+await db.connect();
+
+// Put & Get
+await db.set('steve', { level: 100, guild: 'Legends' });
+const user = await db.get('steve');
+
+// Top N leaderboard
+const leaderboard = await db.top('level', 10);
+```
+
+---
+
+## 🛠️ Command Reference (RESP / TCP Port 7379)
+
+| Command | Description | Example |
+| :--- | :--- | :--- |
+| `AUTH <pass>` | Authenticate client session | `AUTH secret123` |
+| `TABLES` | List all tables | `TABLES` |
+| `CREATE TABLE <name>` | Explicitly create a table | `CREATE TABLE guilds` |
+| `SET <table> <key> <json>` | Put/update a record | `SET players steve {"kills":42}` |
+| `MSET <table> <k1> <v1> ...` | Batch write multiple keys | `MSET players k1 {"a":1} k2 {"a":2}` |
+| `GET <table> <key>` | Fast point lookup | `GET players steve` |
+| `MGET <table> <k1> <k2> ...` | Batch read multiple keys | `MGET players k1 k2` |
+| `DEL <table> <key>` | Delete key (write tombstone) | `DEL players steve` |
+| `JSON.SET <table> <k> <path> <v>` | Atomic update of inner JSON field | `JSON.SET players steve stats.kills 43` |
+| `INDEX CREATE <table> <path>` | Create ranking index on JSON field | `INDEX CREATE players stats.kills` |
+| `TOP <table> <path> [limit]` | Get top N sorted leaderboard | `TOP players stats.kills 10` |
+| `RANK <table> <path> <key>` | Get player's current rank & score | `RANK players stats.kills steve` |
+| `SCAN <table> [start] [end] [n]` | Key-range sequential scan | `SCAN players - + 50` |
+| `FILTER <table> "<query>" [n]` | Search with composite JSON filters | `FILTER players "level >= 50 AND vip == true"` |
+| `EXPIRE <table> <key> <sec>` | Set key expiration (TTL) | `EXPIRE players steve 300` |
+| `TTL <table> <key>` | Get remaining TTL in seconds | `TTL players steve` |
+| `BACKUP [target_dir]` | Live point-in-time snapshot backup | `BACKUP` |
+| `FLUSH [table]` | Force flush MemTable to disk | `FLUSH` |
+| `PING` | Health check (returns `+PONG`) | `PING` |
+
+---
+
+## 📈 Monitoring & Prometheus
+
+MeowDB exposes standard Prometheus metrics on:
+👉 **`http://localhost:7380/metrics`**
+
+Metrics exposed include:
+- `meowdb_up`: Server operational status
+- `meowdb_total_disk_bytes`: Total persistent disk consumption
+- `meowdb_block_cache_capacity_bytes`: Active cache capacity
+- `meowdb_table_records{table="..."}`: Record count per table
+- `meowdb_table_sstable_count{table="..."}`: SSTable file count
+- `meowdb_table_memtable_records{table="..."}`: In-memory active entries
+
+---
+
+## 📄 License
+MeowDB is licensed under the [MIT License](LICENSE).

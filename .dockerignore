@@ -1,0 +1,7 @@
+target/
+data/
+*.sst
+*.log
+*.ndjson
+.git/
+.gemini/

@@ -6,9 +6,39 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::core::types::{DbError, PlayerId, Result, ValueEntry};
 use crate::storage::bloom_filter::BloomFilter;
+use crate::storage::cache::BlockCache;
 
-pub const SSTABLE_MAGIC: u64 = 0x4d454f5753535431; // "MEOWSST1"
-pub const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KB
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum CompressionType {
+    None = 0,
+    Lz4 = 1,
+    Zstd = 2,
+}
+
+impl CompressionType {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_uppercase().as_str() {
+            "ZSTD" | "ZSTANDARD" => CompressionType::Zstd,
+            "NONE" | "OFF" | "RAW" => CompressionType::None,
+            _ => CompressionType::Lz4,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CompressionType::None => "NONE",
+            CompressionType::Lz4 => "LZ4",
+            CompressionType::Zstd => "ZSTD",
+        }
+    }
+}
+
+pub const SSTABLE_MAGIC_V1: u64 = 0x4d454f5753535431; // "MEOWSST1" (80B footer, uncompressed)
+pub const SSTABLE_MAGIC_V2: u64 = 0x4d454f5753535432; // "MEOWSST2" (88B footer, uncompressed)
+pub const SSTABLE_MAGIC_V3: u64 = 0x4d454f5753535433; // "MEOWSST3" (88B footer, LZ4 block compression)
+pub const SSTABLE_MAGIC: u64 = SSTABLE_MAGIC_V3;
+pub const DEFAULT_BLOCK_SIZE: usize = 32 * 1024; // 32 KB default block size
 
 /// Index entry pointing to a block on disk
 #[derive(Debug, Clone)]
@@ -19,16 +49,19 @@ pub struct BlockMeta {
 }
 
 /// SSTable file reader with in-memory metadata & Bloom Filter
+#[derive(Debug)]
 pub struct SsTable {
     file: Arc<File>,
     path: PathBuf,
     id: u64,
     level: u32,
+    version: u32,
     min_key: PlayerId,
     max_key: PlayerId,
     entry_count: u64,
     block_index: Vec<BlockMeta>,
     bloom_filter: BloomFilter,
+    block_cache: Option<Arc<BlockCache>>,
 }
 
 impl SsTable {
@@ -38,6 +71,14 @@ impl SsTable {
 
     pub fn level(&self) -> u32 {
         self.level
+    }
+
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    pub fn is_legacy_version(&self) -> bool {
+        self.version < 3
     }
 
     pub fn path(&self) -> &Path {
@@ -56,23 +97,60 @@ impl SsTable {
         self.entry_count
     }
 
+    /// Rewrite legacy SSTable to latest V3 format (with LZ4 compression) in place
+    pub fn upgrade_in_place(&self) -> Result<Self> {
+        let entries = self.read_all_entries()?;
+        let temp_path = self.path.with_extension("sst.tmp");
+        let builder = SsTableBuilder::new(&temp_path, self.id, self.level);
+        if let Some(_) = builder.build(entries)? {
+            std::fs::rename(&temp_path, &self.path)?;
+            Self::open(&self.path, self.id, self.level)
+        } else {
+            Self::open(&self.path, self.id, self.level)
+        }
+    }
+
     /// Open an existing SSTable and load its index + Bloom Filter into memory
-    pub fn open<P: AsRef<Path>>(path: P, id: u64, level: u32) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, id: u64, fallback_level: u32) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut file = File::open(&path)?;
         let file_len = file.metadata()?.len();
 
-        if file_len < 72 {
+        if file_len < 80 {
             return Err(DbError::SstableCorruption(format!(
                 "SSTable file {} too small",
                 path.display()
             )));
         }
 
-        // Read footer (last 80 bytes)
-        let footer_size = 80;
+        // 1. Read last 8 bytes to identify magic header version
+        file.seek(SeekFrom::End(-8))?;
+        let mut magic_buf = [0u8; 8];
+        file.read_exact(&mut magic_buf)?;
+        let magic = (&magic_buf[..]).get_u64();
+
+        let (footer_size, has_level, version) = match magic {
+            SSTABLE_MAGIC_V3 => (88, true, 3),
+            SSTABLE_MAGIC_V2 => (88, true, 2),
+            SSTABLE_MAGIC_V1 => (80, false, 1),
+            _ => {
+                return Err(DbError::SstableCorruption(format!(
+                    "Invalid SSTable magic header {:016x} in {}",
+                    magic,
+                    path.display()
+                )));
+            }
+        };
+
+        if file_len < footer_size as u64 {
+            return Err(DbError::SstableCorruption(format!(
+                "SSTable file {} too small for footer",
+                path.display()
+            )));
+        }
+
         file.seek(SeekFrom::End(-(footer_size as i64)))?;
-        let mut footer_buf = [0u8; 80];
+        let mut footer_buf = vec![0u8; footer_size];
         file.read_exact(&mut footer_buf)?;
 
         let mut buf = &footer_buf[..];
@@ -90,15 +168,13 @@ impl SsTable {
         let max_key = PlayerId::from_bytes(max_key_bytes);
 
         let entry_count = buf.get_u64();
-        let magic = buf.get_u64();
-
-        if magic != SSTABLE_MAGIC {
-            return Err(DbError::SstableCorruption(format!(
-                "Invalid SSTable magic header {:016x} in {}",
-                magic,
-                path.display()
-            )));
-        }
+        let level = if has_level {
+            let l = buf.get_u32();
+            let _reserved = buf.get_u32();
+            l
+        } else {
+            fallback_level
+        };
 
         // Read Bloom Filter
         file.seek(SeekFrom::Start(bloom_offset))?;
@@ -135,15 +211,89 @@ impl SsTable {
             path,
             id,
             level,
+            version,
             min_key,
             max_key,
             entry_count,
             block_index,
             bloom_filter,
+            block_cache: None,
         })
     }
 
-    /// Fast lookup by key (thread-safe positional read)
+    pub fn with_block_cache(mut self, cache: Option<Arc<BlockCache>>) -> Self {
+        self.block_cache = cache;
+        self
+    }
+
+    pub fn set_block_cache(&mut self, cache: Option<Arc<BlockCache>>) {
+        self.block_cache = cache;
+    }
+
+    /// Positional read and automatic LZ4 decompression of a data block with LRU cache
+    fn read_block_bytes(&self, block_meta: &BlockMeta) -> Result<Bytes> {
+        if let Some(ref cache) = self.block_cache {
+            if cache.is_enabled() {
+                if let Some(cached) = cache.get(self.id, block_meta.offset) {
+                    return Ok(cached);
+                }
+            }
+        }
+
+        let mut block_buf = vec![0u8; block_meta.length as usize];
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+            self.file.read_exact_at(&mut block_buf, block_meta.offset)?;
+        }
+        #[cfg(not(unix))]
+        {
+            let mut file = File::open(&self.path)?;
+            file.seek(SeekFrom::Start(block_meta.offset))?;
+            file.read_exact(&mut block_buf)?;
+        }
+
+        let decompressed = if self.version >= 3 {
+            if block_buf.is_empty() {
+                return Ok(Bytes::new());
+            }
+            match block_buf[0] {
+                1 => {
+                    // LZ4 decompressed directly into Bytes
+                    let decomp = lz4_flex::decompress_size_prepended(&block_buf[1..]).map_err(|e| {
+                        DbError::SstableCorruption(format!("LZ4 decompression error: {}", e))
+                    })?;
+                    Bytes::from(decomp)
+                }
+                2 => {
+                    // ZSTD decompressed directly into Bytes
+                    let decomp = zstd::decode_all(&block_buf[1..]).map_err(|e| {
+                        DbError::SstableCorruption(format!("ZSTD decompression error: {}", e))
+                    })?;
+                    Bytes::from(decomp)
+                }
+                0 => {
+                    // Zero-copy slice of raw bytes
+                    let mut b = Bytes::from(block_buf);
+                    b.advance(1);
+                    b
+                }
+                _ => return Err(DbError::SstableCorruption("Unknown compression type in SSTable block".into())),
+            }
+        } else {
+            Bytes::from(block_buf)
+        };
+
+        if let Some(ref cache) = self.block_cache {
+            if cache.is_enabled() {
+                cache.insert(self.id, block_meta.offset, decompressed.clone());
+            }
+        }
+
+        Ok(decompressed)
+    }
+
+    /// Fast lookup by key (thread-safe positional read with zero-copy value slicing)
     pub fn get(&self, key: &PlayerId) -> Result<Option<ValueEntry>> {
         // 1. Range check
         if *key < self.min_key || *key > self.max_key {
@@ -164,47 +314,30 @@ impl SsTable {
 
         let block_meta = &self.block_index[block_idx];
 
-        // 4. Positional read single data block (thread-safe, no seek contention)
-        let mut block_buf = vec![0u8; block_meta.length as usize];
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::FileExt;
-            self.file.read_exact_at(&mut block_buf, block_meta.offset)?;
-        }
-        #[cfg(not(unix))]
-        {
-            let mut file = File::open(&self.path)?;
-            file.seek(SeekFrom::Start(block_meta.offset))?;
-            file.read_exact(&mut block_buf)?;
-        }
+        // 4. Positional read and decompress block
+        let block_bytes = self.read_block_bytes(block_meta)?;
 
-        // 5. Scan/search inside block
-        let mut slice = &block_buf[..];
-        while slice.len() >= 33 {
+        // 5. Zero-copy scan/search inside block
+        let mut offset = 0;
+        let total_len = block_bytes.len();
+
+        while offset + 37 <= total_len {
             let mut k_bytes = [0u8; 16];
-            slice.copy_to_slice(&mut k_bytes);
+            k_bytes.copy_from_slice(&block_bytes[offset..offset + 16]);
             let entry_key = PlayerId::from_bytes(k_bytes);
-            let seq_num = slice.get_u64();
-            let timestamp = slice.get_u64();
-            let op_type_byte = slice.get_u8();
-            let val_len = slice.get_u32() as usize;
+            let seq_num = u64::from_be_bytes(block_bytes[offset + 16..offset + 24].try_into().unwrap());
+            let timestamp = u64::from_be_bytes(block_bytes[offset + 24..offset + 32].try_into().unwrap());
+            let op_type_byte = block_bytes[offset + 32];
+            let val_len = u32::from_be_bytes(block_bytes[offset + 33..offset + 37].try_into().unwrap()) as usize;
 
-            if slice.len() < val_len {
+            offset += 37;
+            if offset + val_len > total_len {
                 break;
             }
 
-            let val_bytes = if op_type_byte == 1 {
-                let v = Bytes::copy_from_slice(&slice[..val_len]);
-                slice.advance(val_len);
-                Some(v)
-            } else {
-                slice.advance(val_len);
-                None
-            };
-
             if entry_key == *key {
                 let entry = match op_type_byte {
-                    1 => ValueEntry::put(val_bytes.unwrap_or_default(), seq_num, timestamp),
+                    1 => ValueEntry::put(block_bytes.slice(offset..offset + val_len), seq_num, timestamp),
                     2 => ValueEntry::delete(seq_num, timestamp),
                     _ => return Err(DbError::SstableCorruption("Unknown op_type in SSTable".into())),
                 };
@@ -212,58 +345,127 @@ impl SsTable {
             } else if entry_key > *key {
                 break;
             }
+
+            offset += val_len;
         }
 
         Ok(None)
     }
 
-    /// Read all entries from this SSTable (used during compaction)
+    /// Scan entries within a range [start_key, end_key] with zero-copy slicing
+    pub fn scan_range(
+        &self,
+        start_key: Option<PlayerId>,
+        end_key: Option<PlayerId>,
+    ) -> Result<Vec<(PlayerId, ValueEntry)>> {
+        // 1. Quick boundary check
+        if let Some(start) = start_key {
+            if start > self.max_key {
+                return Ok(Vec::new());
+            }
+        }
+        if let Some(end) = end_key {
+            if end < self.min_key {
+                return Ok(Vec::new());
+            }
+        }
+
+        // 2. Binary search start block
+        let start_block_idx = match start_key {
+            Some(start) => match self.block_index.binary_search_by(|b| b.first_key.cmp(&start)) {
+                Ok(idx) => idx,
+                Err(0) => 0,
+                Err(idx) => idx - 1,
+            },
+            None => 0,
+        };
+
+        let mut results = Vec::new();
+
+        // 3. Iterate through relevant blocks
+        for block_meta in &self.block_index[start_block_idx..] {
+            if let Some(end) = end_key {
+                if block_meta.first_key > end {
+                    break;
+                }
+            }
+
+            let block_bytes = self.read_block_bytes(block_meta)?;
+            let mut offset = 0;
+            let total_len = block_bytes.len();
+
+            while offset + 37 <= total_len {
+                let mut k_bytes = [0u8; 16];
+                k_bytes.copy_from_slice(&block_bytes[offset..offset + 16]);
+                let entry_key = PlayerId::from_bytes(k_bytes);
+                let seq_num = u64::from_be_bytes(block_bytes[offset + 16..offset + 24].try_into().unwrap());
+                let timestamp = u64::from_be_bytes(block_bytes[offset + 24..offset + 32].try_into().unwrap());
+                let op_type_byte = block_bytes[offset + 32];
+                let val_len = u32::from_be_bytes(block_bytes[offset + 33..offset + 37].try_into().unwrap()) as usize;
+
+                offset += 37;
+                if offset + val_len > total_len {
+                    break;
+                }
+
+                // Check start bound
+                if let Some(start) = start_key {
+                    if entry_key < start {
+                        offset += val_len;
+                        continue;
+                    }
+                }
+
+                // Check end bound
+                if let Some(end) = end_key {
+                    if entry_key > end {
+                        return Ok(results);
+                    }
+                }
+
+                let entry = match op_type_byte {
+                    1 => ValueEntry::put(block_bytes.slice(offset..offset + val_len), seq_num, timestamp),
+                    2 => ValueEntry::delete(seq_num, timestamp),
+                    _ => return Err(DbError::SstableCorruption("Unknown op_type in SSTable".into())),
+                };
+                results.push((entry_key, entry));
+                offset += val_len;
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Read all entries from this SSTable (used during compaction and migration)
     pub fn read_all_entries(&self) -> Result<Vec<(PlayerId, ValueEntry)>> {
         let mut entries = Vec::with_capacity(self.entry_count as usize);
 
         for block_meta in &self.block_index {
-            let mut block_buf = vec![0u8; block_meta.length as usize];
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::FileExt;
-                self.file.read_exact_at(&mut block_buf, block_meta.offset)?;
-            }
-            #[cfg(not(unix))]
-            {
-                let mut file = File::open(&self.path)?;
-                file.seek(SeekFrom::Start(block_meta.offset))?;
-                file.read_exact(&mut block_buf)?;
-            }
+            let block_bytes = self.read_block_bytes(block_meta)?;
+            let mut offset = 0;
+            let total_len = block_bytes.len();
 
-            let mut slice = &block_buf[..];
-            while slice.len() >= 33 {
+            while offset + 37 <= total_len {
                 let mut k_bytes = [0u8; 16];
-                slice.copy_to_slice(&mut k_bytes);
+                k_bytes.copy_from_slice(&block_bytes[offset..offset + 16]);
                 let entry_key = PlayerId::from_bytes(k_bytes);
-                let seq_num = slice.get_u64();
-                let timestamp = slice.get_u64();
-                let op_type_byte = slice.get_u8();
-                let val_len = slice.get_u32() as usize;
+                let seq_num = u64::from_be_bytes(block_bytes[offset + 16..offset + 24].try_into().unwrap());
+                let timestamp = u64::from_be_bytes(block_bytes[offset + 24..offset + 32].try_into().unwrap());
+                let op_type_byte = block_bytes[offset + 32];
+                let val_len = u32::from_be_bytes(block_bytes[offset + 33..offset + 37].try_into().unwrap()) as usize;
 
-                if slice.len() < val_len {
+                offset += 37;
+                if offset + val_len > total_len {
                     break;
                 }
 
-                let val_bytes = if op_type_byte == 1 {
-                    let v = Bytes::copy_from_slice(&slice[..val_len]);
-                    slice.advance(val_len);
-                    Some(v)
-                } else {
-                    slice.advance(val_len);
-                    None
-                };
-
                 let entry = match op_type_byte {
-                    1 => ValueEntry::put(val_bytes.unwrap_or_default(), seq_num, timestamp),
+                    1 => ValueEntry::put(block_bytes.slice(offset..offset + val_len), seq_num, timestamp),
                     2 => ValueEntry::delete(seq_num, timestamp),
                     _ => return Err(DbError::SstableCorruption("Unknown op_type in SSTable".into())),
                 };
                 entries.push((entry_key, entry));
+                offset += val_len;
             }
         }
 
@@ -271,12 +473,13 @@ impl SsTable {
     }
 }
 
-/// Builder for constructing SSTable files
+/// Builder for constructing SSTable files with configurable block compression (NONE, LZ4, ZSTD)
 pub struct SsTableBuilder {
     path: PathBuf,
     id: u64,
     level: u32,
     target_block_size: usize,
+    compression: CompressionType,
 }
 
 impl SsTableBuilder {
@@ -286,7 +489,74 @@ impl SsTableBuilder {
             id,
             level,
             target_block_size: DEFAULT_BLOCK_SIZE,
+            compression: CompressionType::Lz4,
         }
+    }
+
+    pub fn with_block_size(mut self, block_size: usize) -> Self {
+        self.target_block_size = block_size;
+        self
+    }
+
+    pub fn with_compression(mut self, enabled: bool) -> Self {
+        self.compression = if enabled { CompressionType::Lz4 } else { CompressionType::None };
+        self
+    }
+
+    pub fn with_compression_type(mut self, compression: CompressionType) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    /// Compress and write a single block to disk using selected compression algorithm
+    fn write_block<W: Write>(
+        &self,
+        writer: &mut W,
+        block_bytes: &[u8],
+        first_key: PlayerId,
+        block_index: &mut Vec<BlockMeta>,
+        current_offset: &mut u64,
+    ) -> Result<()> {
+        let mut block_data = Vec::new();
+
+        match self.compression {
+            CompressionType::Lz4 => {
+                let compressed = lz4_flex::compress_prepend_size(block_bytes);
+                if compressed.len() < block_bytes.len() {
+                    block_data.push(1u8); // 1 = LZ4
+                    block_data.extend_from_slice(&compressed);
+                } else {
+                    block_data.push(0u8); // 0 = raw fallback
+                    block_data.extend_from_slice(block_bytes);
+                }
+            }
+            CompressionType::Zstd => {
+                match zstd::encode_all(block_bytes, 3) {
+                    Ok(compressed) if compressed.len() < block_bytes.len() => {
+                        block_data.push(2u8); // 2 = ZSTD
+                        block_data.extend_from_slice(&compressed);
+                    }
+                    _ => {
+                        block_data.push(0u8); // 0 = raw fallback
+                        block_data.extend_from_slice(block_bytes);
+                    }
+                }
+            }
+            CompressionType::None => {
+                block_data.push(0u8); // 0 = raw (uncompressed)
+                block_data.extend_from_slice(block_bytes);
+            }
+        }
+
+        let block_len = block_data.len() as u32;
+        writer.write_all(&block_data)?;
+        block_index.push(BlockMeta {
+            first_key,
+            offset: *current_offset,
+            length: block_len,
+        });
+        *current_offset += block_len as u64;
+        Ok(())
     }
 
     /// Build SSTable from sorted entries iterator
@@ -337,14 +607,13 @@ impl SsTableBuilder {
 
             // Flush block if threshold exceeded
             if current_block.len() >= self.target_block_size {
-                let block_len = current_block.len() as u32;
-                writer.write_all(&current_block)?;
-                block_index.push(BlockMeta {
-                    first_key: block_first_key.unwrap(),
-                    offset: current_offset,
-                    length: block_len,
-                });
-                current_offset += block_len as u64;
+                self.write_block(
+                    &mut writer,
+                    &current_block,
+                    block_first_key.unwrap(),
+                    &mut block_index,
+                    &mut current_offset,
+                )?;
                 current_block.clear();
                 block_first_key = None;
             }
@@ -352,14 +621,13 @@ impl SsTableBuilder {
 
         // Flush remaining block
         if !current_block.is_empty() {
-            let block_len = current_block.len() as u32;
-            writer.write_all(&current_block)?;
-            block_index.push(BlockMeta {
-                first_key: block_first_key.unwrap(),
-                offset: current_offset,
-                length: block_len,
-            });
-            current_offset += block_len as u64;
+            self.write_block(
+                &mut writer,
+                &current_block,
+                block_first_key.unwrap(),
+                &mut block_index,
+                &mut current_offset,
+            )?;
             current_block.clear();
         }
 
@@ -382,8 +650,8 @@ impl SsTableBuilder {
         let bloom_len = bloom_bytes.len() as u64;
         writer.write_all(&bloom_bytes)?;
 
-        // Write Footer: [Index Offset: 8B] [Index Len: 8B] [Bloom Offset: 8B] [Bloom Len: 8B] [Min Key: 16B] [Max Key: 16B] [Entry Count: 8B] [Magic: 8B]
-        let mut footer = BytesMut::with_capacity(80);
+        // Write Footer (88 bytes): [Index Offset: 8B] [Index Len: 8B] [Bloom Offset: 8B] [Bloom Len: 8B] [Min Key: 16B] [Max Key: 16B] [Entry Count: 8B] [Level: 4B] [Reserved: 4B] [Magic: 8B]
+        let mut footer = BytesMut::with_capacity(88);
         footer.put_u64(index_offset);
         footer.put_u64(index_len);
         footer.put_u64(bloom_offset);
@@ -391,7 +659,9 @@ impl SsTableBuilder {
         footer.put_slice(&min_key.to_bytes());
         footer.put_slice(&max_key.to_bytes());
         footer.put_u64(entry_count);
-        footer.put_u64(SSTABLE_MAGIC);
+        footer.put_u32(self.level);
+        footer.put_u32(0); // reserved
+        footer.put_u64(SSTABLE_MAGIC_V3);
         writer.write_all(&footer)?;
 
         writer.flush()?;

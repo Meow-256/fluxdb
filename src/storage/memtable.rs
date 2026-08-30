@@ -42,6 +42,24 @@ impl MemTable {
         self.map.iter().map(|entry| (*entry.key(), entry.value().clone()))
     }
 
+    /// Returns iterator over items within key bounds in sorted order
+    pub fn range(&self, start: Option<PlayerId>, end: Option<PlayerId>) -> Vec<(PlayerId, ValueEntry)> {
+        use std::ops::Bound;
+        let start_bound = match start {
+            Some(k) => Bound::Included(k),
+            None => Bound::Unbounded,
+        };
+        let end_bound = match end {
+            Some(k) => Bound::Included(k),
+            None => Bound::Unbounded,
+        };
+
+        self.map
+            .range((start_bound, end_bound))
+            .map(|entry| (*entry.key(), entry.value().clone()))
+            .collect()
+    }
+
     /// Number of items
     pub fn len(&self) -> usize {
         self.map.len()

@@ -209,6 +209,14 @@ impl IndexManager {
         self.indices.read().keys().cloned().collect()
     }
 
+    pub fn list_indexes(&self) -> Vec<String> {
+        self.list_indices()
+    }
+
+    pub fn clear(&self) {
+        self.indices.write().clear();
+    }
+
     pub fn get_index(&self, path: &str) -> Option<Arc<FieldIndex>> {
         self.indices.read().get(path).cloned()
     }

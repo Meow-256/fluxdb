@@ -57,26 +57,39 @@ impl PlayerId {
         Uuid::from_u128(self.0)
     }
 
+    /// Parse a key: if valid UUID string (36-char or 32-hex), parse directly; otherwise generate a deterministic UUIDv5
     pub fn parse(s: &str) -> Result<Self> {
         let trimmed = s.trim();
-        // Support both hyphenated (36 chars) and non-hyphenated (32 hex chars)
-        let parsed = if trimmed.len() == 32 {
-            Uuid::parse_str(&format!(
+        if trimmed.is_empty() {
+            return Err(DbError::InvalidUuid("Empty key provided".into()));
+        }
+
+        // Try parsing as standard UUID first
+        if trimmed.len() == 36 && trimmed.as_bytes()[8] == b'-' {
+            if let Ok(u) = Uuid::parse_str(trimmed) {
+                return Ok(Self::from_uuid(u));
+            }
+        } else if trimmed.len() == 32 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Ok(u) = Uuid::parse_str(&format!(
                 "{}-{}-{}-{}-{}",
                 &trimmed[0..8],
                 &trimmed[8..12],
                 &trimmed[12..16],
                 &trimmed[16..20],
                 &trimmed[20..32]
-            ))
-        } else {
-            Uuid::parse_str(trimmed)
-        };
-
-        match parsed {
-            Ok(u) => Ok(Self::from_uuid(u)),
-            Err(e) => Err(DbError::InvalidUuid(format!("Failed to parse UUID '{}': {}", s, e))),
+            )) {
+                return Ok(Self::from_uuid(u));
+            }
         }
+
+        // Fallback: Deterministic UUIDv5 hash for arbitrary string keys (e.g. "user:1001", "steve")
+        let hashed = Uuid::new_v5(&Uuid::NAMESPACE_OID, trimmed.as_bytes());
+        Ok(Self::from_uuid(hashed))
+    }
+
+    /// Parse an arbitrary string key (alias for parse)
+    pub fn from_key(s: &str) -> Self {
+        Self::parse(s).unwrap_or_else(|_| Self::from_uuid(Uuid::new_v5(&Uuid::NAMESPACE_OID, s.as_bytes())))
     }
 }
 

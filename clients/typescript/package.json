@@ -1,0 +1,13 @@
+{
+  "name": "meowdb",
+  "version": "0.1.0",
+  "description": "Official TypeScript & Node.js client for MeowDB",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": ["database", "nosql", "redis", "lsm-tree", "meowdb"],
+  "author": "MeowDB Team",
+  "license": "MIT"
+}

@@ -7,11 +7,15 @@ pub enum Command {
     Auth { password: String },
     Tables,
     CreateTable { table: String },
+    DropTable { table: String },
+    TruncateTable { table: String },
     Get { table: String, key: PlayerId },
     Mget { table: String, keys: Vec<PlayerId> },
     Set { table: String, key: PlayerId, value: Bytes },
+    JsonSet { table: String, key: PlayerId, path: String, value: String },
     Mset { table: String, entries: Vec<(PlayerId, Bytes)> },
     Delete { table: String, key: PlayerId },
+    DelWhere { table: String, query: String },
     Exists { table: String, keys: Vec<PlayerId> },
     Expire { table: String, key: PlayerId, seconds: u64 },
     Ttl { table: String, key: PlayerId },
@@ -19,6 +23,13 @@ pub enum Command {
     IndexList { table: String },
     Top { table: String, path: String, limit: usize },
     Rank { table: String, path: String, key: PlayerId },
+    Scan { table: String, start_key: Option<PlayerId>, end_key: Option<PlayerId>, limit: usize },
+    Filter { table: String, query: String, limit: usize },
+    Count { table: String, query: Option<String> },
+    CalcStats { table: String, field: String, query: Option<String> },
+    Multi,
+    Exec,
+    Discard,
     Stats { table: Option<String> },
     Flush { table: Option<String> },
     Backup { target_dir: Option<String> },
@@ -42,6 +53,9 @@ impl CommandParser {
             "PING" => Ok(Command::Ping),
             "TABLES" => Ok(Command::Tables),
             "QUIT" | "EXIT" => Ok(Command::Quit),
+            "MULTI" => Ok(Command::Multi),
+            "EXEC" => Ok(Command::Exec),
+            "DISCARD" => Ok(Command::Discard),
 
             "AUTH" => {
                 if rest.is_empty() {
@@ -56,6 +70,36 @@ impl CommandParser {
                 } else {
                     Err(DbError::InvalidCommand("Usage: SHOW TABLES".into()))
                 }
+            }
+
+            "DROP" => {
+                let mut p = rest.split_whitespace();
+                let first = p.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: DROP TABLE <name>".into())
+                })?;
+                let table_name = if first.eq_ignore_ascii_case("TABLE") {
+                    p.next().ok_or_else(|| {
+                        DbError::InvalidCommand("Usage: DROP TABLE <name>".into())
+                    })?
+                } else {
+                    first
+                };
+                Ok(Command::DropTable { table: table_name.to_lowercase() })
+            }
+
+            "TRUNCATE" => {
+                let mut p = rest.split_whitespace();
+                let first = p.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: TRUNCATE TABLE <name>".into())
+                })?;
+                let table_name = if first.eq_ignore_ascii_case("TABLE") {
+                    p.next().ok_or_else(|| {
+                        DbError::InvalidCommand("Usage: TRUNCATE TABLE <name>".into())
+                    })?
+                } else {
+                    first
+                };
+                Ok(Command::TruncateTable { table: table_name.to_lowercase() })
             }
 
             "CREATE" => {
@@ -310,18 +354,177 @@ impl CommandParser {
                 Ok(Command::Rank { table, path, key })
             }
 
-            "BACKUP" => {
+            "SCAN" | "RANGE" => {
+                let mut scan_parts = rest.split_whitespace();
+                let table = scan_parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: SCAN <table> [start_uuid] [end_uuid] [limit]".into())
+                })?.to_lowercase();
+
+                let p1 = scan_parts.next();
+                let p2 = scan_parts.next();
+                let p3 = scan_parts.next();
+
+                let mut start_key = None;
+                let mut end_key = None;
+                let mut limit = 100;
+
+                match (p1, p2, p3) {
+                    (Some(a), Some(b), Some(c)) => {
+                        if a != "-" && a != "min" {
+                            start_key = Some(PlayerId::parse(a)?);
+                        }
+                        if b != "+" && b != "max" {
+                            end_key = Some(PlayerId::parse(b)?);
+                        }
+                        limit = c.parse::<usize>().unwrap_or(100);
+                    }
+                    (Some(a), Some(b), None) => {
+                        if let Ok(l) = b.parse::<usize>() {
+                            if a != "-" && a != "min" {
+                                start_key = Some(PlayerId::parse(a)?);
+                            }
+                            limit = l;
+                        } else {
+                            if a != "-" && a != "min" {
+                                start_key = Some(PlayerId::parse(a)?);
+                            }
+                            if b != "+" && b != "max" {
+                                end_key = Some(PlayerId::parse(b)?);
+                            }
+                        }
+                    }
+                    (Some(a), None, None) => {
+                        if let Ok(l) = a.parse::<usize>() {
+                            limit = l;
+                        } else if a != "-" && a != "min" {
+                            start_key = Some(PlayerId::parse(a)?);
+                        }
+                    }
+                    _ => {}
+                }
+
+                Ok(Command::Scan {
+                    table,
+                    start_key,
+                    end_key,
+                    limit: limit.clamp(1, 10000),
+                })
+            }
+
+            "FILTER" => {
+                let mut filter_tokens = rest.splitn(2, ' ');
+                let table = filter_tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: FILTER <table> \"<query>\" [limit]".into())
+                })?.to_lowercase();
+                let query_and_limit = filter_tokens.next().unwrap_or("").trim();
+
+                if query_and_limit.is_empty() {
+                    return Err(DbError::InvalidCommand("Usage: FILTER <table> \"<query>\" [limit]".into()));
+                }
+
+                let (query, limit) = if query_and_limit.starts_with('"') {
+                    if let Some(end_idx) = query_and_limit[1..].find('"') {
+                        let q = &query_and_limit[1..=end_idx];
+                        let rem = query_and_limit[end_idx + 2..].trim();
+                        let l = rem.parse::<usize>().unwrap_or(100);
+                        (q.to_string(), l)
+                    } else {
+                        (query_and_limit.to_string(), 100)
+                    }
+                } else {
+                    let parts: Vec<&str> = query_and_limit.split_whitespace().collect();
+                    if parts.len() > 1 && parts.last().unwrap().parse::<usize>().is_ok() {
+                        let l = parts.last().unwrap().parse::<usize>().unwrap();
+                        let q = parts[..parts.len() - 1].join(" ");
+                        (q, l)
+                    } else {
+                        (query_and_limit.to_string(), 100)
+                    }
+                };
+
+                Ok(Command::Filter {
+                    table,
+                    query,
+                    limit: limit.clamp(1, 10000),
+                })
+            }
+
+            "JSON_SET" | "JSON.SET" => {
+                let mut tokens = rest.splitn(4, ' ');
+                let table = tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: JSON_SET <table> <UUID> <path> <value>".into())
+                })?.to_lowercase();
+                let uuid_str = tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: JSON_SET <table> <UUID> <path> <value>".into())
+                })?;
+                let path = tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: JSON_SET <table> <UUID> <path> <value>".into())
+                })?.to_string();
+                let value = tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: JSON_SET <table> <UUID> <path> <value>".into())
+                })?.trim().to_string();
+
+                let key = PlayerId::parse(uuid_str)?;
+                Ok(Command::JsonSet { table, key, path, value })
+            }
+
+            "DEL_WHERE" | "DELETE_WHERE" => {
+                let mut tokens = rest.splitn(2, ' ');
+                let table = tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: DEL_WHERE <table> \"<query>\"".into())
+                })?.to_lowercase();
+                let query = tokens.next().unwrap_or("").trim().trim_matches('"').to_string();
+                if query.is_empty() {
+                    return Err(DbError::InvalidCommand("Usage: DEL_WHERE <table> \"<query>\"".into()));
+                }
+                Ok(Command::DelWhere { table, query })
+            }
+
+            "COUNT" => {
+                let mut tokens = rest.splitn(2, ' ');
+                let table = tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: COUNT <table> [\"<query>\"]".into())
+                })?.to_lowercase();
+                let query = tokens.next().map(|q| q.trim().trim_matches('"').to_string()).filter(|q| !q.is_empty());
+                Ok(Command::Count { table, query })
+            }
+
+            "CALC_STATS" => {
+                let mut tokens = rest.splitn(3, ' ');
+                let table = tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: CALC_STATS <table> <field> [\"<query>\"]".into())
+                })?.to_lowercase();
+                let field = tokens.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: CALC_STATS <table> <field> [\"<query>\"]".into())
+                })?.to_string();
+                let query = tokens.next().map(|q| q.trim().trim_matches('"').to_string()).filter(|q| !q.is_empty());
+                Ok(Command::CalcStats { table, field, query })
+            }
+
+            "BACKUP" | "SNAPSHOT" => {
                 let target = if rest.is_empty() { None } else { Some(rest.to_string()) };
                 Ok(Command::Backup { target_dir: target })
             }
 
             "STATS" => {
-                let table = if rest.is_empty() {
-                    None
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let table = parts[0].to_lowercase();
+                    let field = parts[1].to_string();
+                    let query = if parts.len() > 2 {
+                        Some(parts[2..].join(" ").trim_matches('"').to_string())
+                    } else {
+                        None
+                    };
+                    Ok(Command::CalcStats { table, field, query })
                 } else {
-                    Some(rest.to_lowercase())
-                };
-                Ok(Command::Stats { table })
+                    let table = if rest.is_empty() {
+                        None
+                    } else {
+                        Some(rest.to_lowercase())
+                    };
+                    Ok(Command::Stats { table })
+                }
             }
 
             "FLUSH" => {

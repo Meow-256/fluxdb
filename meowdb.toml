@@ -1,0 +1,36 @@
+# ==========================================================
+# MeowDB Server Configuration
+# High-Performance UUID-Optimized LSM-Tree Database
+# ==========================================================
+
+[server]
+# TCP binary protocol listen address (Redis-compatible text/RESP)
+bind = "0.0.0.0:7379"
+
+# REST API & Web UI Dashboard HTTP listen address
+http_bind = "0.0.0.0:7380"
+
+# Optional password authentication (leave empty/commented to disable)
+# require_pass = "secret_password"
+
+# Maximum worker threads (0 = auto-detected CPU cores)
+max_threads = 8
+
+[storage]
+# Base persistent data directory
+data_dir = "./data"
+
+# Decompressed LRU Block Cache size in Megabytes (0 = OFF, e.g. 256 for 256MB)
+block_cache_mb = 256
+
+# Maximum RAM size for active MemTable before flushing to SSTable (in MB)
+memtable_size_mb = 256
+
+# Number of L0 SSTable files before triggering background merge compaction
+compaction_trigger = 4
+
+# Group Commit delay window in microseconds (1000us = 1ms recommended)
+commit_delay_us = 1000
+
+# High-throughput asynchronous fsync mode (true = maximum speed, false = strict per-commit fsync)
+async_fsync = true
