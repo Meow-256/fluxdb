@@ -70,6 +70,32 @@ async fn handle_http_client(
         (full_path, "")
     };
 
+    // Endpoints that do not require prior authentication
+    if path == "/api/auth/status" {
+        let current_pass = table_manager.get_auth_password();
+        let resp = serde_json::json!({
+            "auth_required": current_pass.is_some()
+        });
+        send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
+        return Ok(());
+    } else if path == "/api/auth/verify" {
+        let current_pass = table_manager.get_auth_password();
+        if let Some(ref pass) = current_pass {
+            let token = extract_query_param(query, "token").unwrap_or_default();
+            if token == *pass {
+                let resp = serde_json::json!({ "authenticated": true, "auth_required": true });
+                send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
+            } else {
+                let resp = serde_json::json!({ "authenticated": false, "auth_required": true, "error": "Invalid password" });
+                send_response(&mut stream, "401 Unauthorized", "application/json", &resp.to_string()).await?;
+            }
+        } else {
+            let resp = serde_json::json!({ "authenticated": true, "auth_required": false });
+            send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
+        }
+        return Ok(());
+    }
+
     // Check optional dynamic HTTP auth token in query param (?token=password)
     let current_pass = table_manager.get_auth_password();
     if let Some(ref pass) = current_pass {
@@ -1181,9 +1207,91 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       max-height: none;
       height: 100%;
     }
+
+    /* Auth Modal & Overlay */
+    .auth-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.82);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 99999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .auth-card {
+      background: #ffffff;
+      border-radius: 12px;
+      padding: 32px 28px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.25), 0 10px 10px -5px rgba(0, 0, 0, 0.1);
+      border: 1px solid rgba(226, 232, 240, 0.8);
+      text-align: center;
+      animation: modalFadeIn 0.2s ease-out;
+    }
+    @keyframes modalFadeIn {
+      from { opacity: 0; transform: scale(0.95) translateY(10px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .auth-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 9px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #f3f4f6;
+      color: #4b5563;
+      border: 1px solid #e5e7eb;
+    }
+    .auth-badge.protected {
+      background: #f5f3ff;
+      color: #6d28d9;
+      border-color: #ddd6fe;
+    }
+    .btn-logout {
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #4b5563;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn-logout:hover {
+      background: #fee2e2;
+      color: #b91c1c;
+      border-color: #fca5a5;
+    }
   </style>
 </head>
 <body>
+  <!-- Authentication Modal -->
+  <div id="auth-modal" class="auth-overlay" style="display:none;">
+    <div class="auth-card">
+      <div style="font-size: 32px; margin-bottom: 8px;">🔒</div>
+      <h2 style="font-size: 20px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">FluxDB Console Login</h2>
+      <p style="font-size: 13px; color: #64748b; margin-bottom: 20px;">This database instance is password protected. Enter the AUTH password to access the console.</p>
+      
+      <form id="auth-form" onsubmit="event.preventDefault(); submitLogin();">
+        <div style="margin-bottom: 16px; text-align: left;">
+          <label style="font-weight: 600; font-size: 12px; color: #475569; display: block; margin-bottom: 6px;">Authentication Password:</label>
+          <input type="password" id="auth-input-pass" placeholder="Enter password..." style="width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; outline: none; transition: border-color 0.2s;" required>
+        </div>
+        <div id="auth-error-msg" style="display: none; color: #dc2626; font-size: 13px; margin-bottom: 14px; text-align: left; background: #fef2f2; padding: 8px 12px; border-radius: 6px; border: 1px solid #fee2e2;"></div>
+        <button type="submit" id="auth-submit-btn" class="btn" style="width: 100%; padding: 10px; font-size: 14px; font-weight: 600; background: #7c3aed; color: #ffffff; border-radius: 6px; border: none; cursor: pointer; transition: background 0.2s;">Unlock Dashboard</button>
+      </form>
+    </div>
+  </div>
+
   <div class="layout">
     <!-- Sidebar: Tables & Global Tools -->
     <div class="sidebar">
@@ -1227,6 +1335,8 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
             </div>
             <button class="btn-warning" onclick="truncateCurrentTable()">TRUNCATE TABLE</button>
             <button class="btn-danger" onclick="dropCurrentTable()">DROP TABLE</button>
+            <span id="auth-status-indicator" class="auth-badge">🔓 Open Mode</span>
+            <button id="btn-logout" class="btn-logout" style="display:none;" onclick="logout()">🔒 Logout</button>
             <a href="https://github.com/Meow-256/fluxdb" target="_blank" rel="noopener noreferrer" style="display:inline-flex; align-items:center; gap:5px; padding:6px 12px; background:#111827; color:#ffffff; font-size:12px; font-weight:600; border-radius:6px; text-decoration:none;">
               <svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
               GitHub
@@ -1475,12 +1585,16 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
 
       <!-- Dedicated Global Server Settings View -->
       <div id="settings-view" style="display:none;">
-        <header style="margin-bottom:20px; border-bottom:1px solid #e5e7eb; padding-bottom:12px;">
+        <header style="margin-bottom:20px; border-bottom:1px solid #e5e7eb; padding-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
           <div>
             <h1 style="color:#6d28d9; font-size:22px;">⚙️ Global Server Settings</h1>
             <div style="font-size:12px; color:#6b7280; margin-top:4px;">Configure database runtime parameters dynamically without restarts</div>
           </div>
-          <div class="status-badge" style="background:#f5f3ff; color:#6d28d9; border:1px solid #ddd6fe;">● Live Engine Active</div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span id="auth-status-indicator-settings" class="auth-badge">🔓 Open Mode</span>
+            <button id="btn-logout-settings" class="btn-logout" style="display:none;" onclick="logout()">🔒 Logout</button>
+            <div class="status-badge" style="background:#f5f3ff; color:#6d28d9; border:1px solid #ddd6fe;">● Live Engine Active</div>
+          </div>
         </header>
 
         <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:24px; max-width:680px;">
@@ -1553,15 +1667,156 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
     let currentTable = null;
     let showAllRecords = [];
     let selectedShowKey = null;
+    let authToken = sessionStorage.getItem('fluxdb_auth_token') || '';
+    let isDashboardInitialized = false;
 
     function escapeHtml(str) {
       if (typeof str !== 'string') str = String(str);
       return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
 
+    // Authenticated API request wrapper
+    async function authFetch(url, options = {}) {
+      let finalUrl = url;
+      if (authToken) {
+        const sep = finalUrl.includes('?') ? '&' : '?';
+        finalUrl = `${finalUrl}${sep}token=${encodeURIComponent(authToken)}`;
+      }
+      const res = await fetch(finalUrl, options);
+      if (res.status === 401) {
+        sessionStorage.removeItem('fluxdb_auth_token');
+        authToken = '';
+        updateAuthHeader(true, false);
+        showAuthModal(true, 'Authentication required or session expired.');
+        throw new Error('401 Unauthorized');
+      }
+      return res;
+    }
+
+    function showAuthModal(hasError = false, errorText = '') {
+      const modal = document.getElementById('auth-modal');
+      const errEl = document.getElementById('auth-error-msg');
+      modal.style.display = 'flex';
+      if (hasError) {
+        errEl.style.display = 'block';
+        errEl.innerText = errorText || 'Invalid password.';
+      } else {
+        errEl.style.display = 'none';
+      }
+      setTimeout(() => {
+        const inp = document.getElementById('auth-input-pass');
+        if (inp) {
+          inp.focus();
+          inp.select();
+        }
+      }, 100);
+    }
+
+    function hideAuthModal() {
+      document.getElementById('auth-modal').style.display = 'none';
+      document.getElementById('auth-error-msg').style.display = 'none';
+      const inp = document.getElementById('auth-input-pass');
+      if (inp) inp.value = '';
+    }
+
+    function updateAuthHeader(authRequired, isAuthenticated = true) {
+      const ind1 = document.getElementById('auth-status-indicator');
+      const ind2 = document.getElementById('auth-status-indicator-settings');
+      const btn1 = document.getElementById('btn-logout');
+      const btn2 = document.getElementById('btn-logout-settings');
+
+      if (authRequired) {
+        const text = isAuthenticated ? '🔒 Auth Protected' : '🔒 Auth Required';
+        const cls = 'auth-badge protected';
+        if (ind1) { ind1.className = cls; ind1.innerText = text; }
+        if (ind2) { ind2.className = cls; ind2.innerText = text; }
+        if (btn1) btn1.style.display = isAuthenticated ? 'inline-flex' : 'none';
+        if (btn2) btn2.style.display = isAuthenticated ? 'inline-flex' : 'none';
+      } else {
+        const text = '🔓 Open Mode';
+        const cls = 'auth-badge';
+        if (ind1) { ind1.className = cls; ind1.innerText = text; }
+        if (ind2) { ind2.className = cls; ind2.innerText = text; }
+        if (btn1) btn1.style.display = 'none';
+        if (btn2) btn2.style.display = 'none';
+      }
+    }
+
+    async function submitLogin() {
+      const inp = document.getElementById('auth-input-pass');
+      const pass = (inp ? inp.value : '').trim();
+      const btn = document.getElementById('auth-submit-btn');
+      btn.disabled = true;
+      btn.innerText = 'Verifying...';
+
+      try {
+        const res = await fetch('/api/auth/verify?token=' + encodeURIComponent(pass));
+        const data = await res.json();
+        if (res.ok && data.authenticated) {
+          authToken = pass;
+          sessionStorage.setItem('fluxdb_auth_token', authToken);
+          hideAuthModal();
+          updateAuthHeader(true, true);
+          startDashboard();
+        } else {
+          showAuthModal(true, data.error || 'Incorrect password.');
+        }
+      } catch (e) {
+        showAuthModal(true, 'Connection error: ' + e);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'Unlock Dashboard';
+      }
+    }
+
+    function logout() {
+      authToken = '';
+      sessionStorage.removeItem('fluxdb_auth_token');
+      location.reload();
+    }
+
+    async function checkAuthAndInit() {
+      try {
+        const res = await fetch('/api/auth/status');
+        const data = await res.json();
+        if (data.auth_required) {
+          if (authToken) {
+            const vRes = await fetch('/api/auth/verify?token=' + encodeURIComponent(authToken));
+            if (vRes.ok) {
+              const vData = await vRes.json();
+              if (vData.authenticated) {
+                updateAuthHeader(true, true);
+                startDashboard();
+                return;
+              }
+            }
+            sessionStorage.removeItem('fluxdb_auth_token');
+            authToken = '';
+          }
+          updateAuthHeader(true, false);
+          showAuthModal(false);
+        } else {
+          updateAuthHeader(false);
+          startDashboard();
+        }
+      } catch (e) {
+        console.error('Auth status check error:', e);
+        startDashboard();
+      }
+    }
+
+    function startDashboard() {
+      isDashboardInitialized = true;
+      loadTables().then(() => {
+        updateTableStats();
+        loadServerConfig();
+        loadShowKeys();
+      });
+    }
+
     async function loadTables() {
       try {
-        const res = await fetch('/api/tables');
+        const res = await authFetch('/api/tables');
         const data = await res.json();
         const listEl = document.getElementById('sidebar-tables');
         listEl.innerHTML = '';
@@ -1607,7 +1862,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const listEl = document.getElementById('show-keys-list');
       const countEl = document.getElementById('show-keys-count');
       try {
-        const res = await fetch('/api/keys?table=' + encodeURIComponent(currentTable) + '&limit=50000');
+        const res = await authFetch('/api/keys?table=' + encodeURIComponent(currentTable) + '&limit=50000');
         const data = await res.json();
         showAllRecords = data.records || [];
         countEl.innerText = showAllRecords.length.toLocaleString();
@@ -1699,7 +1954,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const name = prompt('Enter new table name (e.g. players, guilds, users):');
       if (!name) return;
       const clean = name.trim().toLowerCase();
-      const res = await fetch('/api/table/create?name=' + encodeURIComponent(clean));
+      const res = await authFetch('/api/table/create?name=' + encodeURIComponent(clean));
       if (res.ok) {
         switchTable(clean);
       }
@@ -1708,7 +1963,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
     async function dropCurrentTable() {
       if (!currentTable) return;
       if (!confirm(`Are you sure you want to permanently DROP table '${currentTable}'?\nAll data files on disk will be deleted.`)) return;
-      const res = await fetch('/api/table/drop?name=' + encodeURIComponent(currentTable));
+      const res = await authFetch('/api/table/drop?name=' + encodeURIComponent(currentTable));
       const data = await res.json();
       if (data.success) {
         currentTable = null;
@@ -1721,7 +1976,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
     async function truncateCurrentTable() {
       if (!currentTable) return;
       if (!confirm(`Are you sure you want to TRUNCATE all records from table '${currentTable}'?`)) return;
-      const res = await fetch('/api/table/truncate?name=' + encodeURIComponent(currentTable));
+      const res = await authFetch('/api/table/truncate?name=' + encodeURIComponent(currentTable));
       const data = await res.json();
       if (data.success) {
         updateTableStats();
@@ -1733,14 +1988,14 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
 
     async function triggerFlush() {
       if (!currentTable) return;
-      const res = await fetch('/api/flush?table=' + encodeURIComponent(currentTable));
+      const res = await authFetch('/api/flush?table=' + encodeURIComponent(currentTable));
       const data = await res.json();
       alert('Flush completed: ' + JSON.stringify(data));
       updateTableStats();
     }
 
     async function triggerBackup() {
-      const res = await fetch('/api/backup');
+      const res = await authFetch('/api/backup');
       const data = await res.json();
       alert('Backup completed: ' + (data.backup_path || data.error));
     }
@@ -1748,7 +2003,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
     async function updateTableStats() {
       if (!currentTable) return;
       try {
-        const res = await fetch('/api/stats?table=' + encodeURIComponent(currentTable));
+        const res = await authFetch('/api/stats?table=' + encodeURIComponent(currentTable));
         const data = await res.json();
         document.getElementById('val-total').innerText = (data.total_records || 0).toLocaleString();
         document.getElementById('val-mem').innerText = (data.active_memtable_entries || 0).toLocaleString();
@@ -1778,7 +2033,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
     async function changeTableCompression(val) {
       if (!currentTable) return;
       try {
-        const res = await fetch(`/api/table/compression/update?table=${encodeURIComponent(currentTable)}&type=${encodeURIComponent(val)}`);
+        const res = await authFetch(`/api/table/compression/update?table=${encodeURIComponent(currentTable)}&type=${encodeURIComponent(val)}`);
         const data = await res.json();
         if (data.success) {
           updateTableStats();
@@ -1795,7 +2050,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const box = document.getElementById('lookup-result');
       box.innerText = 'Searching...';
       try {
-        const res = await fetch(`/api/get?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}`);
+        const res = await authFetch(`/api/get?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
@@ -1815,7 +2070,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const box = document.getElementById('lookup-result');
       box.innerText = 'Updating...';
       try {
-        const res = await fetch(`/api/json_set?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}&path=${encodeURIComponent(path)}&value=${encodeURIComponent(val)}`);
+        const res = await authFetch(`/api/json_set?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}&path=${encodeURIComponent(path)}&value=${encodeURIComponent(val)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
         updateTableStats();
@@ -1832,7 +2087,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const box = document.getElementById('scan-result');
       box.innerText = 'Scanning...';
       try {
-        const res = await fetch(`/api/scan?table=${encodeURIComponent(currentTable)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&limit=${encodeURIComponent(limit)}`);
+        const res = await authFetch(`/api/scan?table=${encodeURIComponent(currentTable)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&limit=${encodeURIComponent(limit)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
@@ -1847,7 +2102,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const box = document.getElementById('filter-result');
       box.innerText = 'Filtering...';
       try {
-        const res = await fetch(`/api/filter?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}&limit=${encodeURIComponent(limit)}`);
+        const res = await authFetch(`/api/filter?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}&limit=${encodeURIComponent(limit)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
@@ -1861,7 +2116,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const box = document.getElementById('filter-result');
       box.innerText = 'Counting records...';
       try {
-        const res = await fetch(`/api/count?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}`);
+        const res = await authFetch(`/api/count?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
@@ -1880,7 +2135,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const box = document.getElementById('filter-result');
       box.innerText = 'Deleting records...';
       try {
-        const res = await fetch(`/api/del_where?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}`);
+        const res = await authFetch(`/api/del_where?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
         updateTableStats();
@@ -1900,7 +2155,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const box = document.getElementById('stats-result');
       box.innerText = 'Calculating statistics...';
       try {
-        const res = await fetch(`/api/stats_calc?table=${encodeURIComponent(currentTable)}&field=${encodeURIComponent(field)}&query=${encodeURIComponent(q)}`);
+        const res = await authFetch(`/api/stats_calc?table=${encodeURIComponent(currentTable)}&field=${encodeURIComponent(field)}&query=${encodeURIComponent(q)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
@@ -1914,7 +2169,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       if (!uuid) return;
       const box = document.getElementById('lookup-result');
       try {
-        const res = await fetch(`/api/exists?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}`);
+        const res = await authFetch(`/api/exists?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}`);
         const data = await res.json();
         box.innerText = 'Key Existence (EXISTS): ' + (data.exists ? 'EXISTS (TRUE)' : 'NOT FOUND (FALSE)');
       } catch (e) {
@@ -1929,7 +2184,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       if (!uuid) return;
       const box = document.getElementById('ttl-result');
       try {
-        const res = await fetch(`/api/expire?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}&seconds=${encodeURIComponent(sec)}`);
+        const res = await authFetch(`/api/expire?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}&seconds=${encodeURIComponent(sec)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
@@ -1993,7 +2248,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
 
       tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">Loading rankings...</td></tr>';
       try {
-        const res = await fetch(url);
+        const res = await authFetch(url);
         const data = await res.json();
         tbody.innerHTML = '';
         if (!data.rankings || data.rankings.length === 0) {
@@ -2018,14 +2273,14 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       if (!currentTable) return;
       const val = document.getElementById('new-index-input').value.trim();
       if (!val) return;
-      await fetch(`/api/index/create?table=${encodeURIComponent(currentTable)}&field=${encodeURIComponent(val)}`);
+      await authFetch(`/api/index/create?table=${encodeURIComponent(currentTable)}&field=${encodeURIComponent(val)}`);
       document.getElementById('new-index-input').value = '';
       updateTableStats();
     }
 
     async function loadServerConfig() {
       try {
-        const res = await fetch('/api/config');
+        const res = await authFetch('/api/config');
         const cfg = await res.json();
         if (document.getElementById('cfg-memtable')) {
           document.getElementById('cfg-memtable').value = cfg.memtable_size_mb || 256;
@@ -2045,7 +2300,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const mem = document.getElementById('cfg-memtable').value;
       const cache = document.getElementById('cfg-cache').value;
       const threads = document.getElementById('cfg-threads').value;
-      const auth = document.getElementById('cfg-auth').value;
+      const auth = (document.getElementById('cfg-auth').value || '').trim();
       const delay = document.getElementById('cfg-delay').value;
       const comp = document.getElementById('cfg-compaction').value;
       const asyncFsync = document.getElementById('cfg-async-fsync').checked;
@@ -2056,8 +2311,20 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       box.style.display = 'block';
       box.innerText = 'Applying configuration...';
       try {
-        const res = await fetch('/api/config/update?' + q);
+        const res = await authFetch('/api/config/update?' + q);
         const data = await res.json();
+        
+        // Auto synchronize session token if auth password was set or cleared
+        if (auth.length > 0) {
+          authToken = auth;
+          sessionStorage.setItem('fluxdb_auth_token', authToken);
+          updateAuthHeader(true, true);
+        } else {
+          authToken = '';
+          sessionStorage.removeItem('fluxdb_auth_token');
+          updateAuthHeader(false);
+        }
+
         box.innerText = 'Configuration saved and applied live:\n' + JSON.stringify(data, null, 2);
         updateTableStats();
       } catch (e) {
@@ -2099,13 +2366,12 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       if (name === 'rank') loadRankings();
     }
 
-    loadTables().then(() => {
-      updateTableStats();
-      loadServerConfig();
-      loadShowKeys();
-    });
+    // Start application with authentication check
+    checkAuthAndInit();
+
+    // Auto refresh every 3 seconds if active
     setInterval(() => {
-      if (document.getElementById('table-view-section').style.display !== 'none') {
+      if (isDashboardInitialized && document.getElementById('table-view-section').style.display !== 'none') {
         loadTables();
         updateTableStats();
       }
