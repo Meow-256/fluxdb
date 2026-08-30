@@ -1,6 +1,6 @@
 {
   "name": "@meow256/fluxdb",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Official TypeScript & Node.js client for FluxDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,7 +14,13 @@
     "typescript": "^5.0.0",
     "@types/node": "^20.0.0"
   },
-  "keywords": ["database", "nosql", "redis", "lsm-tree", "meowdb"],
-  "author": "MeowDB Team",
+  "keywords": [
+    "database",
+    "nosql",
+    "redis",
+    "lsm-tree",
+    "fluxdb"
+  ],
+  "author": "FluxDB Team",
   "license": "MIT"
 }

@@ -23,10 +23,10 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.VeloxDB = exports.MeowDB = void 0;
+exports.FluxDB = exports.VeloxDB = exports.MeowDB = void 0;
 const net = __importStar(require("net"));
 
-class MeowDB {
+class FluxDB {
     constructor(options = {}) {
         this.socket = null;
         this.buffer = '';
@@ -151,6 +151,31 @@ class MeowDB {
         const raw = await this.send(`TOP ${t} ${path} ${limit}`);
         return raw ? JSON.parse(raw) : [];
     }
+    async rank(path, key, table) {
+        const t = table || this.defaultTable;
+        const raw = await this.send(`RANK ${t} ${path} ${key}`);
+        return raw ? JSON.parse(raw) : null;
+    }
+    async aroundKey(path, key, limit = 10, table) {
+        const t = table || this.defaultTable;
+        const raw = await this.send(`RANK.KEY ${t} ${path} ${key} ${limit}`);
+        return raw ? JSON.parse(raw) : [];
+    }
+    async aroundScore(path, score, limit = 10, table) {
+        const t = table || this.defaultTable;
+        const raw = await this.send(`RANK.SCORE ${t} ${path} ${score} ${limit}`);
+        return raw ? JSON.parse(raw) : [];
+    }
+    async rankingByScoreRange(path, minScore, maxScore, limit = 50, table) {
+        const t = table || this.defaultTable;
+        const raw = await this.send(`RANK.RANGE_SCORE ${t} ${path} ${minScore} ${maxScore} ${limit}`);
+        return raw ? JSON.parse(raw) : [];
+    }
+    async rankingByRankRange(path, startRank, endRank, table) {
+        const t = table || this.defaultTable;
+        const raw = await this.send(`RANK.RANGE ${t} ${path} ${startRank} ${endRank}`);
+        return raw ? JSON.parse(raw) : [];
+    }
     async count(query, table) {
         const t = table || this.defaultTable;
         const cmd = query ? `COUNT ${t} ${query}` : `COUNT ${t}`;
@@ -168,7 +193,7 @@ class MeowDB {
         }
     }
 }
-exports.MeowDB = MeowDB;
-exports.VeloxDB = MeowDB;
-exports.FluxDB = MeowDB;
-exports.default = exports.FluxDB;
+exports.FluxDB = FluxDB;
+exports.MeowDB = FluxDB;
+exports.VeloxDB = FluxDB;
+exports.default = FluxDB;

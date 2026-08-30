@@ -9,8 +9,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader, Buf
 use tokio::net::TcpStream;
 
 #[derive(Parser, Debug)]
-#[command(name = "meowdb-load")]
-#[command(about = "High-speed multi-threaded bulk importer from NDJSON into MeowDB")]
+#[command(name = "fluxdb-load")]
+#[command(about = "High-speed multi-threaded bulk importer from NDJSON into FluxDB")]
 struct Args {
     #[arg(short, long, default_value = "127.0.0.1:7379")]
     server: String,

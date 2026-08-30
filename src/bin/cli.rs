@@ -4,8 +4,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 #[derive(Parser, Debug)]
-#[command(name = "meowdb-cli")]
-#[command(about = "Interactive CLI client for MeowDB (Full Feature Support)")]
+#[command(name = "fluxdb-cli")]
+#[command(about = "Interactive CLI client for FluxDB (Full Feature Support)")]
 struct Args {
     #[arg(short, long, default_value = "127.0.0.1:7379")]
     server: String,
@@ -17,7 +17,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    println!("Connecting to MeowDB at {}...", args.server);
+    println!("Connecting to FluxDB at {}...", args.server);
 
     let stream = match TcpStream::connect(&args.server).await {
         Ok(s) => s,
@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Connected to MeowDB! Type HELP or commands like:");
+    println!("Connected to FluxDB! Type HELP or commands like:");
     println!("  TABLES                                     - List tables");
     println!("  CREATE TABLE <name>                        - Create table");
     println!("  SET <table> <uuid> <json_data>             - Insert single record");
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stdin = io::stdin();
     loop {
-        print!("meowdb> ");
+        print!("fluxdb> ");
         io::stdout().flush()?;
 
         let mut input = String::new();

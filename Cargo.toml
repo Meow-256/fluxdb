@@ -1,5 +1,5 @@
 [package]
-name = "meow-database"
+name = "fluxdb"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,7 +12,7 @@ crossbeam-skiplist = "0.1"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
 crc32fast = "1.4"
-uuid = { version = "1.8", features = ["v4", "fast-rng", "serde"] }
+uuid = { version = "1.8", features = ["v4", "v5", "fast-rng", "serde"] }
 clap = { version = "4.5", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -25,25 +25,25 @@ zstd = "0.13"
 toml = "0.8"
 
 [[bin]]
-name = "meowdb-server"
+name = "fluxdb-server"
 path = "src/main.rs"
 
 [[bin]]
-name = "meowdb-cli"
+name = "fluxdb-cli"
 path = "src/bin/cli.rs"
 
 [[bin]]
-name = "meowdb-bench"
+name = "fluxdb-bench"
 path = "src/bin/bench.rs"
 
 [[bin]]
-name = "meowdb-dump"
+name = "fluxdb-dump"
 path = "src/bin/dump.rs"
 
 [[bin]]
-name = "meowdb-load"
+name = "fluxdb-load"
 path = "src/bin/load.rs"
 
 [[bin]]
-name = "meowdb-check"
+name = "fluxdb-check"
 path = "src/bin/check.rs"

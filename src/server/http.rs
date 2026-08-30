@@ -22,7 +22,7 @@ impl HttpServer {
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(self.addr).await?;
-        info!("MeowDB Web UI Dashboard listening on http://{}", self.addr);
+        info!("FluxDB Web UI Dashboard listening on http://{}", self.addr);
 
         loop {
             let (socket, _) = match listener.accept().await {
@@ -89,49 +89,49 @@ async fn handle_http_client(
         let total_disk = table_manager.total_disk_size_bytes();
 
         let mut out = String::new();
-        out.push_str("# HELP meowdb_up MeowDB server operational status (1 = online)\n");
-        out.push_str("# TYPE meowdb_up gauge\n");
-        out.push_str("meowdb_up 1\n\n");
+        out.push_str("# HELP fluxdb_up FluxDB server operational status (1 = online)\n");
+        out.push_str("# TYPE fluxdb_up gauge\n");
+        out.push_str("fluxdb_up 1\n\n");
 
-        out.push_str("# HELP meowdb_total_disk_bytes Total persistent disk space consumed by all tables\n");
-        out.push_str("# TYPE meowdb_total_disk_bytes gauge\n");
-        out.push_str(&format!("meowdb_total_disk_bytes {}\n\n", total_disk));
+        out.push_str("# HELP fluxdb_total_disk_bytes Total persistent disk space consumed by all tables\n");
+        out.push_str("# TYPE fluxdb_total_disk_bytes gauge\n");
+        out.push_str(&format!("fluxdb_total_disk_bytes {}\n\n", total_disk));
 
-        out.push_str("# HELP meowdb_configured_worker_threads Maximum worker threads configured\n");
-        out.push_str("# TYPE meowdb_configured_worker_threads gauge\n");
-        out.push_str(&format!("meowdb_configured_worker_threads {}\n\n", conf.worker_threads));
+        out.push_str("# HELP fluxdb_configured_worker_threads Maximum worker threads configured\n");
+        out.push_str("# TYPE fluxdb_configured_worker_threads gauge\n");
+        out.push_str(&format!("fluxdb_configured_worker_threads {}\n\n", conf.worker_threads));
 
-        out.push_str("# HELP meowdb_block_cache_capacity_bytes LRU Block Cache capacity in bytes\n");
-        out.push_str("# TYPE meowdb_block_cache_capacity_bytes gauge\n");
-        out.push_str(&format!("meowdb_block_cache_capacity_bytes {}\n\n", conf.block_cache_mb * 1024 * 1024));
+        out.push_str("# HELP fluxdb_block_cache_capacity_bytes LRU Block Cache capacity in bytes\n");
+        out.push_str("# TYPE fluxdb_block_cache_capacity_bytes gauge\n");
+        out.push_str(&format!("fluxdb_block_cache_capacity_bytes {}\n\n", conf.block_cache_mb * 1024 * 1024));
 
-        out.push_str("# HELP meowdb_table_records Total records stored in table\n");
-        out.push_str("# TYPE meowdb_table_records gauge\n");
+        out.push_str("# HELP fluxdb_table_records Total records stored in table\n");
+        out.push_str("# TYPE fluxdb_table_records gauge\n");
         for t in &tables_info {
             let name = t["name"].as_str().unwrap_or("unknown");
             let count = t["total_records"].as_u64().unwrap_or(0);
-            out.push_str(&format!("meowdb_table_records{{table=\"{}\"}} {}\n", name, count));
+            out.push_str(&format!("fluxdb_table_records{{table=\"{}\"}} {}\n", name, count));
         }
-        out.push_str("\n# HELP meowdb_table_memtable_records Active RAM records in MemTable\n");
-        out.push_str("# TYPE meowdb_table_memtable_records gauge\n");
+        out.push_str("\n# HELP fluxdb_table_memtable_records Active RAM records in MemTable\n");
+        out.push_str("# TYPE fluxdb_table_memtable_records gauge\n");
         for t in &tables_info {
             let name = t["name"].as_str().unwrap_or("unknown");
             let mem = t["memtable_records"].as_u64().unwrap_or(0);
-            out.push_str(&format!("meowdb_table_memtable_records{{table=\"{}\"}} {}\n", name, mem));
+            out.push_str(&format!("fluxdb_table_memtable_records{{table=\"{}\"}} {}\n", name, mem));
         }
-        out.push_str("\n# HELP meowdb_table_sstable_count Total on-disk SSTable files\n");
-        out.push_str("# TYPE meowdb_table_sstable_count gauge\n");
+        out.push_str("\n# HELP fluxdb_table_sstable_count Total on-disk SSTable files\n");
+        out.push_str("# TYPE fluxdb_table_sstable_count gauge\n");
         for t in &tables_info {
             let name = t["name"].as_str().unwrap_or("unknown");
             let sst = t["sstable_count"].as_u64().unwrap_or(0);
-            out.push_str(&format!("meowdb_table_sstable_count{{table=\"{}\"}} {}\n", name, sst));
+            out.push_str(&format!("fluxdb_table_sstable_count{{table=\"{}\"}} {}\n", name, sst));
         }
-        out.push_str("\n# HELP meowdb_table_disk_bytes On-disk byte size per table\n");
-        out.push_str("# TYPE meowdb_table_disk_bytes gauge\n");
+        out.push_str("\n# HELP fluxdb_table_disk_bytes On-disk byte size per table\n");
+        out.push_str("# TYPE fluxdb_table_disk_bytes gauge\n");
         for t in &tables_info {
             let name = t["name"].as_str().unwrap_or("unknown");
             let disk = t["disk_size_bytes"].as_u64().unwrap_or(0);
-            out.push_str(&format!("meowdb_table_disk_bytes{{table=\"{}\"}} {}\n", name, disk));
+            out.push_str(&format!("fluxdb_table_disk_bytes{{table=\"{}\"}} {}\n", name, disk));
         }
 
         send_response(&mut stream, "200 OK", "text/plain; version=0.0.4; charset=utf-8", &out).await?;
@@ -582,9 +582,10 @@ async fn handle_http_client(
                 send_response(&mut stream, "500 Internal Error", "application/json", &resp.to_string()).await?;
             }
         }
-    } else if path == "/api/top" {
+    } else if path == "/api/top" || path == "/api/rankings" {
         let table_name = extract_query_param(query, "table").unwrap_or_default();
         let field = extract_query_param(query, "field").unwrap_or_default();
+        let mode = extract_query_param(query, "mode").unwrap_or_else(|| "top".to_string());
         let limit: usize = extract_query_param(query, "limit")
             .and_then(|s| s.parse().ok())
             .unwrap_or(50);
@@ -592,7 +593,45 @@ async fn handle_http_client(
         if let Some(table) = table_manager.get_table(&table_name) {
             match table.index_manager.get_index(&field) {
                 Some(idx) => {
-                    let entries = idx.get_top(limit);
+                    let entries = match mode.as_str() {
+                        "around_key" => {
+                            if let Some(key_str) = extract_query_param(query, "key") {
+                                if let Ok(player) = PlayerId::parse(&key_str) {
+                                    idx.get_around_key(&player, limit).unwrap_or_default()
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        "around_score" => {
+                            let target_score = extract_query_param(query, "score")
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .unwrap_or(0.0);
+                            idx.get_around_score(target_score, limit)
+                        }
+                        "score_range" => {
+                            let min = extract_query_param(query, "min")
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .unwrap_or(f64::MIN);
+                            let max = extract_query_param(query, "max")
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .unwrap_or(f64::MAX);
+                            idx.get_score_range(min, max, limit)
+                        }
+                        "rank_range" => {
+                            let start = extract_query_param(query, "start")
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap_or(1);
+                            let end = extract_query_param(query, "end")
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap_or(50);
+                            idx.get_rank_range(start, end)
+                        }
+                        _ => idx.get_top(limit),
+                    };
+
                     let list: Vec<serde_json::Value> = entries
                         .into_iter()
                         .map(|(p, score, rank)| {
@@ -606,6 +645,8 @@ async fn handle_http_client(
                     let resp = serde_json::json!({
                         "table": table_name,
                         "field": field,
+                        "mode": mode,
+                        "total_ranked": idx.len(),
                         "count": list.len(),
                         "rankings": list
                     });
@@ -773,11 +814,11 @@ async fn send_response(stream: &mut TcpStream, status: &str, content_type: &str,
 }
 
 const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MeowDB テーブル管理画面</title>
+  <title>FluxDB Management Console</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -850,279 +891,370 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       justify-content: space-between;
       align-items: center;
       padding-bottom: 16px;
-      margin-bottom: 20px;
       border-bottom: 1px solid #e5e7eb;
+      margin-bottom: 20px;
     }
-    h1 { font-size: 20px; font-weight: 700; }
-    .header-actions { display: flex; gap: 8px; align-items: center; }
-    .btn-danger {
-      background: #fee2e2;
-      color: #dc2626;
-      border: 1px solid #fca5a5;
-      padding: 6px 12px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .btn-danger:hover { background: #fecaca; }
-    .btn-warning {
-      background: #fef3c7;
-      color: #d97706;
-      border: 1px solid #fde68a;
-      padding: 6px 12px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .btn-warning:hover { background: #fde68a; }
-
+    h1 { font-size: 20px; font-weight: 700; color: #111827; }
     .status-badge {
-      background: #ecfdf5;
-      color: #047857;
-      border: 1px solid #a7f3d0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       padding: 4px 10px;
-      border-radius: 6px;
+      background-color: #ecfdf5;
+      color: #065f46;
+      border-radius: 9999px;
       font-size: 12px;
       font-weight: 600;
     }
-
-    /* Empty state */
-    .empty-banner {
-      background: #f9fafb;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 32px;
-      text-align: center;
-      color: #6b7280;
-    }
-
-    /* Metrics Grid */
+    
+    /* Metrics Top Bar */
     .metrics {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      gap: 12px;
-      margin-bottom: 20px;
+      gap: 16px;
+      margin-bottom: 24px;
     }
     .metric-card {
+      background: #f9fafb;
       border: 1px solid #e5e7eb;
-      background: #fafafa;
-      border-radius: 6px;
-      padding: 12px 14px;
+      padding: 16px;
+      border-radius: 8px;
     }
-    .metric-label { font-size: 11px; color: #6b7280; font-weight: 600; text-transform: uppercase; margin-bottom: 2px; }
-    .metric-val { font-size: 20px; font-weight: 700; color: #111827; font-family: monospace; }
+    .metric-label { font-size: 12px; color: #6b7280; font-weight: 600; margin-bottom: 4px; }
+    .metric-val { font-size: 24px; font-weight: 700; color: #111827; font-family: monospace; }
     .metric-sub { font-size: 11px; color: #9ca3af; margin-top: 2px; }
 
-    /* Tabs */
-    .tabs { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid #e5e7eb; overflow-x: auto; }
+    /* Navigation Tabs */
+    .tabs {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid #e5e7eb;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
     .tab-btn {
-      background: none;
-      border: none;
-      border-bottom: 2px solid transparent;
-      padding: 8px 14px;
+      padding: 8px 16px;
       font-size: 13px;
       font-weight: 600;
       color: #6b7280;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
       cursor: pointer;
-      margin-bottom: -1px;
-      white-space: nowrap;
     }
-    .tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }
+    .tab-btn:hover { color: #111827; }
+    .tab-btn.active {
+      color: #2563eb;
+      border-bottom-color: #2563eb;
+    }
 
+    /* Tab Panels */
     .panel { display: none; }
     .panel.active { display: block; }
 
-    .form-group { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    /* Controls & Forms */
+    .form-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
     input[type="text"], input[type="number"], select {
-      flex: 1;
-      min-width: 140px;
+      padding: 8px 12px;
       border: 1px solid #d1d5db;
       border-radius: 6px;
-      padding: 8px 12px;
-      font-size: 14px;
+      font-size: 13px;
       font-family: monospace;
       outline: none;
+      flex: 1;
     }
-    button.btn {
-      background: #2563eb;
-      color: #fff;
+    input:focus, select:focus { border-color: #2563eb; }
+    .btn {
+      padding: 8px 16px;
+      background-color: #2563eb;
+      color: white;
       border: none;
       border-radius: 6px;
-      padding: 8px 16px;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 600;
       cursor: pointer;
+      white-space: nowrap;
     }
-    button.btn:hover { background: #1d4ed8; }
+    .btn:hover { background-color: #1d4ed8; }
+    .btn-danger { background-color: #dc2626; }
+    .btn-danger:hover { background-color: #b91c1c; }
+    .btn-warning { background-color: #d97706; color: white; border: none; border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .btn-warning:hover { background-color: #b45309; }
 
     pre {
-      background: #f9fafb;
-      border: 1px solid #e5e7eb;
-      border-radius: 6px;
-      padding: 12px;
-      font-family: monospace;
+      background: #111827;
+      color: #f3f4f6;
+      padding: 16px;
+      border-radius: 8px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
       font-size: 13px;
-      color: #111827;
-      overflow-x: auto;
-      max-height: 450px;
+      line-height: 1.4;
+      max-height: 500px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
     }
 
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { padding: 8px 12px; border-bottom: 1px solid #e5e7eb; text-align: left; }
-    th { background: #f3f4f6; font-size: 12px; font-weight: 600; color: #4b5563; }
-    td { font-family: monospace; font-size: 13px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+    th, td {
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 13px;
+    }
+    th { background: #f9fafb; font-weight: 600; color: #4b5563; }
+    td { font-family: monospace; }
     .rank-num { font-weight: 700; color: #2563eb; }
     .score-num { font-weight: 700; color: #059669; text-align: right; }
+
+    .empty-banner {
+      padding: 40px;
+      text-align: center;
+      background: #f9fafb;
+      border: 2px dashed #d1d5db;
+      border-radius: 8px;
+      color: #6b7280;
+    }
   </style>
 </head>
 <body>
   <div class="layout">
-    <!-- Sidebar: Tables -->
+    <!-- Sidebar: Tables & Global Tools -->
     <div class="sidebar">
-      <h2>📁 テーブル一覧</h2>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <h2 style="margin:0;">📁 Tables</h2>
+        <a href="https://github.com/Meow-256/fluxdb" target="_blank" rel="noopener noreferrer" style="display:inline-flex; align-items:center; gap:4px; font-size:12px; color:#4b5563; text-decoration:none; padding:4px 8px; border-radius:6px; border:1px solid #e5e7eb; background:#f9fafb; font-weight:600;">
+          <svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+          GitHub
+        </a>
+      </div>
       <ul class="table-list" id="sidebar-tables"></ul>
-      <button class="btn-create-table" onclick="promptCreateTable()">+ 新規テーブル作成</button>
+      <button class="btn-create-table" onclick="promptCreateTable()">+ Create Table</button>
 
-      <div style="margin-top: 16px; margin-bottom: 16px;">
-        <button class="btn-action-side" onclick="triggerFlush()">⚡ ディスクへFlush</button>
-        <button class="btn-action-side" onclick="triggerBackup()">💾 スナップショット退避 (Hot Backup)</button>
+      <div style="margin-top: 16px; margin-bottom: 16px; display:flex; flex-direction:column; gap:8px;">
+        <button class="btn-action-side" onclick="triggerFlush()">⚡ Flush to Disk</button>
+        <button class="btn-action-side" onclick="triggerBackup()">💾 Hot Backup (Snapshot)</button>
+        <button class="btn-action-side" id="btn-side-settings" onclick="openServerSettingsView()" style="background:#f5f3ff; color:#6d28d9; border:1px solid #ddd6fe; font-weight:700;">⚙️ Server Settings</button>
       </div>
 
       <div style="font-size: 12px; color: #6b7280; padding-top: 8px; border-top: 1px solid #e5e7eb;">
-        <div>総ディスク容量:</div>
+        <div>Total Disk Usage:</div>
         <div id="total-disk-size" style="font-weight: 700; color: #111827; font-size: 14px;">0 B</div>
       </div>
     </div>
 
     <!-- Main Content -->
     <div class="main">
-      <header>
-        <div>
-          <h1>テーブル: <span id="current-table-title" style="color: #2563eb; font-family: monospace;">(選択されていません)</span></h1>
-        </div>
-        <div class="header-actions" style="display:flex; align-items:center; gap:10px;">
-          <div style="display:flex; align-items:center; gap:6px; background:#f3f4f6; padding:5px 10px; border-radius:6px; border:1px solid #e5e7eb;">
-            <label style="font-size:12px; font-weight:700; color:#374151;">📦 圧縮方式:</label>
-            <select id="table-compression-select" onchange="changeTableCompression(this.value)" style="padding:2px 8px; font-size:12px; border-radius:4px; border:1px solid #d1d5db; background:white; font-weight:600; cursor:pointer;">
-              <option value="LZ4">LZ4 (高速・標準)</option>
-              <option value="ZSTD">ZSTD (最高圧縮・大容量)</option>
-              <option value="NONE">NONE (非圧縮・最速)</option>
-            </select>
+      <div id="table-view-section">
+        <header>
+          <div>
+            <h1>Table: <span id="current-table-title" style="color: #2563eb; font-family: monospace;">(No table selected)</span></h1>
           </div>
-          <button class="btn-warning" onclick="truncateCurrentTable()">TRUNCATE TABLE</button>
-          <button class="btn-danger" onclick="dropCurrentTable()">DROP TABLE</button>
-          <div class="status-badge">● 稼働中 (Online)</div>
+          <div class="header-actions" style="display:flex; align-items:center; gap:10px;">
+            <div style="display:flex; align-items:center; gap:6px; background:#f3f4f6; padding:5px 10px; border-radius:6px; border:1px solid #e5e7eb;">
+              <label style="font-size:12px; font-weight:700; color:#374151;">📦 Compression:</label>
+              <select id="table-compression-select" onchange="changeTableCompression(this.value)" style="padding:2px 8px; font-size:12px; border-radius:4px; border:1px solid #d1d5db; background:white; font-weight:600; cursor:pointer;">
+                <option value="LZ4">LZ4 (Fast / Balanced)</option>
+                <option value="ZSTD">ZSTD (Max Compression)</option>
+                <option value="NONE">NONE (Raw / Uncompressed)</option>
+              </select>
+            </div>
+            <button class="btn-warning" onclick="truncateCurrentTable()">TRUNCATE TABLE</button>
+            <button class="btn-danger" onclick="dropCurrentTable()">DROP TABLE</button>
+            <a href="https://github.com/Meow-256/fluxdb" target="_blank" rel="noopener noreferrer" style="display:inline-flex; align-items:center; gap:5px; padding:6px 12px; background:#111827; color:#ffffff; font-size:12px; font-weight:600; border-radius:6px; text-decoration:none;">
+              <svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+              GitHub
+            </a>
+            <div class="status-badge">● Online</div>
+          </div>
+        </header>
+
+        <div id="empty-state" class="empty-banner" style="display:none;">
+          <h3 style="color:#111827; margin-bottom:8px;">No Tables Found</h3>
+          <p>Click "+ Create Table" on the left or run <code>CREATE TABLE &lt;name&gt;</code> from the CLI.</p>
         </div>
-      </header>
 
-      <div id="empty-state" class="empty-banner" style="display:none;">
-        <h3 style="color:#111827; margin-bottom:8px;">テーブルが存在しません</h3>
-        <p>左側の「+ 新規テーブル作成」ボタンを押すか、CLIから <code>CREATE TABLE &lt;name&gt;</code> を実行してください。</p>
-      </div>
-
-      <div id="table-content">
+        <div id="table-content">
         <!-- Metrics -->
         <div class="metrics">
           <div class="metric-card">
-            <div class="metric-label">総レコード数 (Total Records)</div>
+            <div class="metric-label">Total Records</div>
             <div class="metric-val" id="val-total">0</div>
-            <div class="metric-sub" id="val-total-sub">メモリ + ディスク合計</div>
+            <div class="metric-sub" id="val-total-sub">RAM + Persistent Disk</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">メモリ内 (MemTable)</div>
+            <div class="metric-label">MemTable (RAM)</div>
             <div class="metric-val" id="val-mem">0</div>
-            <div class="metric-sub">RAM上の未フラッシュ件数</div>
+            <div class="metric-sub">Active Unflushed Records</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">ディスクSSTableファイル数</div>
+            <div class="metric-label">SSTable Files (Disk)</div>
             <div class="metric-val" id="val-sst">0</div>
-            <div class="metric-sub">永続化済み (LZ4圧縮)</div>
+            <div class="metric-sub">Persisted On-Disk Files</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">テーブル容量 (Disk)</div>
+            <div class="metric-label">Table Disk Size</div>
             <div class="metric-val" id="val-disk">0 B</div>
-            <div class="metric-sub">WAL + SSTable合計</div>
+            <div class="metric-sub">WAL + SSTables Total</div>
           </div>
         </div>
 
         <!-- Tabs -->
         <div class="tabs">
-          <button class="tab-btn active" onclick="showTab('lookup')">UUID 検索 / 部分更新 (JSON_SET)</button>
-          <button class="tab-btn" onclick="showTab('scan')">レンジスキャン (SCAN)</button>
-          <button class="tab-btn" onclick="showTab('filter')">条件検索 / 一括削除 (FILTER / DEL_WHERE)</button>
-          <button class="tab-btn" onclick="showTab('stats')">集計・統計 (STATS / COUNT)</button>
-          <button class="tab-btn" onclick="showTab('rank')">ランキング (Leaderboard)</button>
-          <button class="tab-btn" onclick="showTab('index')">インデックス設定</button>
-          <button class="tab-btn" onclick="showTab('ttl')">TTL設定</button>
-          <button class="tab-btn" onclick="showTab('settings')" style="color:#7c3aed;">⚙️ サーバー設定 (Settings)</button>
+          <button class="tab-btn active" onclick="showTab('lookup')">Lookup & JSON_SET</button>
+          <button class="tab-btn" onclick="showTab('scan')">Range Scan (SCAN)</button>
+          <button class="tab-btn" onclick="showTab('filter')">Filter & DelWhere</button>
+          <button class="tab-btn" onclick="showTab('stats')">Stats & Aggregation</button>
+          <button class="tab-btn" onclick="showTab('rank')">Leaderboard (TOP / RANK)</button>
+          <button class="tab-btn" onclick="showTab('index')">Index Manager</button>
+          <button class="tab-btn" onclick="showTab('ttl')">TTL / Expiration</button>
         </div>
 
         <!-- Tab 1: Lookup & JSON_SET -->
         <div id="tab-lookup" class="panel active">
           <div class="form-group">
-            <input type="text" id="input-uuid" placeholder="検索する UUID (例: 909fb8ea-1b14-4ca9-b15b-277ec2559be0)">
-            <button class="btn" onclick="searchUuid()">検索 (GET)</button>
-            <button class="btn" style="background:#4b5563;" onclick="checkExists()">存在確認 (EXISTS)</button>
+            <input type="text" id="input-uuid" placeholder="Enter UUID or string key (e.g. 909fb8ea-1b14-4ca9-b15b-277ec2559be0 or steve)">
+            <button class="btn" onclick="searchUuid()">Get Record (GET)</button>
+            <button class="btn" style="background:#4b5563;" onclick="checkExists()">Check Exists (EXISTS)</button>
           </div>
           <div class="form-group" style="background:#f3f4f6; padding:10px; border-radius:6px;">
-            <input type="text" id="jsonset-path" placeholder="JSONパス (例: stats.Bedwars.coins)" style="max-width:240px;">
-            <input type="text" id="jsonset-val" placeholder="新しい値 (例: 5000000 または 'new_name')">
-            <button class="btn" style="background:#059669;" onclick="performJsonSet()">部分更新 (JSON_SET)</button>
+            <input type="text" id="jsonset-path" placeholder="JSON field path (e.g. stats.Bedwars.coins)" style="max-width:240px;">
+            <input type="text" id="jsonset-val" placeholder="New JSON value (e.g. 5000000 or 'new_name')">
+            <button class="btn" style="background:#059669;" onclick="performJsonSet()">Partial Update (JSON_SET)</button>
           </div>
-          <pre id="lookup-result">// ここに JSON データが表示されます</pre>
+          <pre id="lookup-result">// Record JSON payload will be displayed here</pre>
         </div>
 
         <!-- Tab 2: Range Scan -->
         <div id="tab-scan" class="panel">
           <div class="form-group">
-            <input type="text" id="scan-start" placeholder="開始 UUID (空欄で先頭から)">
-            <input type="text" id="scan-end" placeholder="終了 UUID (空欄で末尾まで)">
-            <input type="number" id="scan-limit" placeholder="件数" value="50" style="max-width:100px;">
-            <button class="btn" onclick="runScan()">レンジスキャン実行</button>
+            <input type="text" id="scan-start" placeholder="Start Key / UUID (blank for beginning)">
+            <input type="text" id="scan-end" placeholder="End Key / UUID (blank for end)">
+            <input type="number" id="scan-limit" placeholder="Limit" value="50" style="max-width:100px;">
+            <button class="btn" onclick="runScan()">Execute Range Scan</button>
           </div>
-          <pre id="scan-result">// レンジスキャン結果が表示されます</pre>
+          <pre id="scan-result">// Range scan results will be displayed here</pre>
         </div>
 
         <!-- Tab 3: Filter & Batch Delete -->
         <div id="tab-filter" class="panel">
           <div class="form-group">
-            <input type="text" id="filter-query" placeholder="フィルタ条件 (例: player.achievements.bedwars_level >= 100 AND player.stats.SkyWars.coins > 1000000)">
-            <input type="number" id="filter-limit" placeholder="件数" value="50" style="max-width:100px;">
-            <button class="btn" onclick="runFilter()">検索 (FILTER)</button>
-            <button class="btn" style="background:#4b5563;" onclick="runCount()">件数取得 (COUNT)</button>
-            <button class="btn btn-danger" onclick="runDelWhere()">条件一括削除 (DEL_WHERE)</button>
+            <input type="text" id="filter-query" placeholder="Filter expression (e.g. player.achievements.bedwars_level >= 100 AND player.stats.SkyWars.coins > 1000000)">
+            <input type="number" id="filter-limit" placeholder="Limit" value="50" style="max-width:100px;">
+            <button class="btn" onclick="runFilter()">Search (FILTER)</button>
+            <button class="btn" style="background:#4b5563;" onclick="runCount()">Count Matches (COUNT)</button>
+            <button class="btn btn-danger" onclick="runDelWhere()">Batch Delete (DEL_WHERE)</button>
           </div>
-          <pre id="filter-result">// フィルタ検索結果が表示されます</pre>
+          <pre id="filter-result">// Filter query results will be displayed here</pre>
         </div>
 
         <!-- Tab 4: Aggregation & Stats -->
         <div id="tab-stats" class="panel">
           <div class="form-group">
-            <input type="text" id="stats-field" placeholder="集計対象の数値フィールド (例: stats.Bedwars.kills_bedwars)">
-            <input type="text" id="stats-query" placeholder="フィルタ条件 (任意 例: stats.Bedwars.coins > 0)">
-            <button class="btn" onclick="runStatsCalc()">集計実行 (STATS: SUM/AVG/MIN/MAX)</button>
+            <input type="text" id="stats-field" placeholder="Target numeric JSON field (e.g. stats.Bedwars.kills_bedwars)">
+            <input type="text" id="stats-query" placeholder="Optional filter query (e.g. stats.Bedwars.coins > 0)">
+            <button class="btn" onclick="runStatsCalc()">Calculate Stats (SUM/AVG/MIN/MAX)</button>
           </div>
-          <pre id="stats-result">// 集計結果 (Count, Sum, Avg, Min, Max) が表示されます</pre>
+          <pre id="stats-result">// Aggregation results (Count, Sum, Avg, Min, Max) will be displayed here</pre>
         </div>
 
         <!-- Tab 5: Ranking -->
         <div id="tab-rank" class="panel">
-          <div class="form-group">
-            <select id="select-rank-field"></select>
-            <button class="btn" onclick="loadRankings()">ランキング更新</button>
+          <div class="form-group" style="background:#f9fafb; padding:12px; border-radius:8px; border:1px solid #e5e7eb; gap:10px;">
+            <div style="display:flex; flex-direction:column; gap:4px;">
+              <label style="font-size:11px; font-weight:700; color:#4b5563;">INDEXED FIELD</label>
+              <select id="select-rank-field" style="min-width:180px;"></select>
+            </div>
+            
+            <div style="display:flex; flex-direction:column; gap:4px;">
+              <label style="font-size:11px; font-weight:700; color:#4b5563;">QUERY MODE</label>
+              <select id="rank-mode-select" onchange="onRankModeChange()" style="min-width:180px;">
+                <option value="top">Top N Leaderboard</option>
+                <option value="around_key">Around Key / UUID</option>
+                <option value="around_score">Around Specific Score</option>
+                <option value="score_range">Score Range (Min - Max)</option>
+                <option value="rank_range">Rank Range (e.g. 30 - 50)</option>
+              </select>
+            </div>
+
+            <!-- Dynamic Input Container -->
+            <div id="rank-inputs-top" style="display:flex; flex-direction:column; gap:4px;">
+              <label style="font-size:11px; font-weight:700; color:#4b5563;">LIMIT</label>
+              <input type="number" id="rank-top-limit" value="50" style="max-width:100px;">
+            </div>
+
+            <div id="rank-inputs-around-key" style="display:none; gap:8px;">
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">TARGET KEY / UUID</label>
+                <input type="text" id="rank-key-input" placeholder="e.g. steve or UUID" style="min-width:200px;">
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">COUNT (N)</label>
+                <input type="number" id="rank-key-limit" value="10" style="max-width:80px;">
+              </div>
+            </div>
+
+            <div id="rank-inputs-around-score" style="display:none; gap:8px;">
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">CENTER SCORE</label>
+                <input type="number" step="any" id="rank-score-input" placeholder="e.g. 1500" style="min-width:120px;">
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">COUNT (N)</label>
+                <input type="number" id="rank-score-limit" value="10" style="max-width:80px;">
+              </div>
+            </div>
+
+            <div id="rank-inputs-score-range" style="display:none; gap:8px;">
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">MIN SCORE</label>
+                <input type="number" step="any" id="rank-min-score" placeholder="e.g. 50" style="max-width:110px;">
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">MAX SCORE</label>
+                <input type="number" step="any" id="rank-max-score" placeholder="e.g. 100" style="max-width:110px;">
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">LIMIT</label>
+                <input type="number" id="rank-range-limit" value="50" style="max-width:80px;">
+              </div>
+            </div>
+
+            <div id="rank-inputs-rank-range" style="display:none; gap:8px;">
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">START RANK</label>
+                <input type="number" id="rank-start-rank" value="30" style="max-width:100px;">
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:11px; font-weight:700; color:#4b5563;">END RANK</label>
+                <input type="number" id="rank-end-rank" value="50" style="max-width:100px;">
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:flex-end;">
+              <button class="btn" onclick="loadRankings()" style="height:36px;">Fetch Rankings</button>
+            </div>
           </div>
           <table>
             <thead>
               <tr>
-                <th style="width: 70px;">順位</th>
-                <th>UUID</th>
-                <th style="text-align: right; width: 120px;">スコア</th>
+                <th style="width: 80px;">Rank</th>
+                <th>UUID / Key</th>
+                <th style="text-align: right; width: 140px;">Score</th>
               </tr>
             </thead>
             <tbody id="rank-tbody">
-              <tr><td colspan="3" style="text-align:center; color:#9ca3af;">読み込み中...</td></tr>
+              <tr><td colspan="3" style="text-align:center; color:#9ca3af;">Loading rankings...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1130,89 +1262,96 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
         <!-- Tab 6: Index Manager -->
         <div id="tab-index" class="panel">
           <div class="form-group">
-            <input type="text" id="new-index-input" placeholder="インデックス化するJSONパス (例: stats.Bedwars.coins)">
-            <button class="btn" onclick="addIndex()">インデックス追加</button>
+            <input type="text" id="new-index-input" placeholder="JSON field path to index (e.g. stats.Bedwars.coins)">
+            <button class="btn" onclick="addIndex()">Create Index</button>
           </div>
-          <div style="font-weight: 600; margin-bottom: 6px; color: #4b5563;">登録済みインデックス一覧:</div>
-          <pre id="index-list">読み込み中...</pre>
+          <div style="font-weight: 600; margin-bottom: 6px; color: #4b5563;">Registered Secondary Indices:</div>
+          <pre id="index-list">Loading index list...</pre>
         </div>
 
         <!-- Tab 7: TTL / Expire -->
         <div id="tab-ttl" class="panel">
           <div class="form-group">
-            <input type="text" id="ttl-uuid" placeholder="対象の UUID">
-            <input type="number" id="ttl-seconds" placeholder="有効期限 (秒数)" style="max-width: 160px;" value="60">
-            <button class="btn" onclick="setTtl()">EXPIRE 設定</button>
+            <input type="text" id="ttl-uuid" placeholder="Target Key / UUID">
+            <input type="number" id="ttl-seconds" placeholder="Time-To-Live in Seconds" style="max-width: 160px;" value="60">
+            <button class="btn" onclick="setTtl()">Set EXPIRE</button>
           </div>
-          <pre id="ttl-result">// 実行結果がここに表示されます</pre>
+          <pre id="ttl-result">// TTL operation result will be displayed here</pre>
         </div>
+      </div>
+    </div>
 
-        <!-- Tab 8: Server Settings -->
-        <div id="tab-settings" class="panel">
-          <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:20px; max-width:650px;">
-            <h3 style="margin-bottom:16px; color:#111827; font-size:16px;">⚙️ 動的サーバー設定 (Hot Config)</h3>
-            
-            <div style="margin-bottom:14px;">
-              <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">MemTable 最大サイズ (RAM未フラッシュ許容量):</label>
-              <select id="cfg-memtable" style="width:100%;">
-                <option value="64">64 MB</option>
-                <option value="128">128 MB</option>
-                <option value="256">256 MB (デフォルト)</option>
-                <option value="512">512 MB</option>
-                <option value="1024">1,024 MB (1 GB)</option>
-                <option value="2048">2,048 MB (2 GB)</option>
-              </select>
-            </div>
-
-            <div style="margin-bottom:14px;">
-              <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">解凍ブロックキャッシュ (Block Cache):</label>
-              <select id="cfg-cache" style="width:100%;">
-                <option value="0">0 MB (OFF / キャッシュ無効)</option>
-                <option value="64">64 MB</option>
-                <option value="128">128 MB</option>
-                <option value="256">256 MB (推奨)</option>
-                <option value="512">512 MB</option>
-                <option value="1024">1,024 MB (1 GB)</option>
-              </select>
-              <span style="font-size:11px; color:#6b7280;">ONにすると解凍済みデータをRAM保持し、読み込みが 2〜5 µs に高速化</span>
-            </div>
-
-            <div style="margin-bottom:14px;">
-              <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">並行処理スレッド数 (Parallel Worker Threads):</label>
-              <input type="number" id="cfg-threads" min="0" max="128" style="width:100%;" placeholder="0 = 自動適応スケール, 1〜128">
-              <span style="font-size:11px; color:#6b7280;">0: 負荷に応じて自動スケール / 1〜128: 最大並行ワーカースレッド数</span>
-            </div>
-
-            <div style="margin-bottom:14px;">
-              <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">認証パスワード (Auth Password):</label>
-              <input type="text" id="cfg-auth" style="width:100%;" placeholder="空欄でパスワード認証無効">
-            </div>
-
-            <div style="margin-bottom:14px;">
-              <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">Group Commit 遅延ウィンドウ (µs):</label>
-              <select id="cfg-delay" style="width:100%;">
-                <option value="100">100 µs (超低遅延)</option>
-                <option value="500">500 µs</option>
-                <option value="1000">1,000 µs (1 ms - 推奨)</option>
-                <option value="2000">2,000 µs (2 ms)</option>
-                <option value="5000">5,000 µs (高スループット)</option>
-              </select>
-            </div>
-
-            <div style="margin-bottom:14px;">
-              <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">L0 コンパクション閾値 (SSTable ファイル数):</label>
-              <input type="number" id="cfg-compaction" min="2" max="32" style="width:100%;" value="4">
-            </div>
-
-            <div style="margin-bottom:20px;">
-              <label style="font-weight:600; font-size:13px; display:flex; align-items:center; gap:8px;">
-                <input type="checkbox" id="cfg-async-fsync"> 非同期 fsync モード (高速スループット)
-              </label>
-            </div>
-
-            <button class="btn" style="background:#7c3aed; width:100%;" onclick="saveServerConfig()">💾 設定を保存・即時適用 (Apply Settings)</button>
-            <pre id="cfg-status" style="margin-top:12px; display:none;"></pre>
+      <!-- Dedicated Global Server Settings View -->
+      <div id="settings-view" style="display:none;">
+        <header style="margin-bottom:20px; border-bottom:1px solid #e5e7eb; padding-bottom:12px;">
+          <div>
+            <h1 style="color:#6d28d9; font-size:22px;">⚙️ Global Server Settings</h1>
+            <div style="font-size:12px; color:#6b7280; margin-top:4px;">Configure database runtime parameters dynamically without restarts</div>
           </div>
+          <div class="status-badge" style="background:#f5f3ff; color:#6d28d9; border:1px solid #ddd6fe;">● Live Engine Active</div>
+        </header>
+
+        <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:24px; max-width:680px;">
+          <div style="margin-bottom:16px;">
+            <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">MemTable RAM Capacity (Flush Threshold):</label>
+            <select id="cfg-memtable" style="width:100%;">
+              <option value="64">64 MB</option>
+              <option value="128">128 MB</option>
+              <option value="256">256 MB (Default)</option>
+              <option value="512">512 MB</option>
+              <option value="1024">1,024 MB (1 GB)</option>
+              <option value="2048">2,048 MB (2 GB)</option>
+            </select>
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">Decompressed LRU Block Cache:</label>
+            <select id="cfg-cache" style="width:100%;">
+              <option value="0">0 MB (Disabled / Cache OFF)</option>
+              <option value="64">64 MB</option>
+              <option value="128">128 MB</option>
+              <option value="256">256 MB (Recommended)</option>
+              <option value="512">512 MB</option>
+              <option value="1024">1,024 MB (1 GB)</option>
+            </select>
+            <span style="font-size:11px; color:#6b7280;">Retains decompressed data blocks in RAM for ultra-fast nanosecond point lookups</span>
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">Parallel Worker Threads:</label>
+            <input type="number" id="cfg-threads" min="0" max="128" style="width:100%;" placeholder="0 = auto CPU core detection">
+            <span style="font-size:11px; color:#6b7280;">0: Auto-scale to available CPU cores / 1-128: Explicit worker thread pool size</span>
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">Authentication Password (AUTH):</label>
+            <input type="text" id="cfg-auth" style="width:100%;" placeholder="Leave blank to disable authentication">
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">Group Commit Delay Window (µs):</label>
+            <select id="cfg-delay" style="width:100%;">
+              <option value="100">100 µs (Ultra-low latency)</option>
+              <option value="500">500 µs</option>
+              <option value="1000">1,000 µs (1 ms - Recommended)</option>
+              <option value="2000">2,000 µs (2 ms)</option>
+              <option value="5000">5,000 µs (High throughput)</option>
+            </select>
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label style="font-weight:600; font-size:13px; display:block; margin-bottom:4px;">L0 SSTables Compaction Trigger:</label>
+            <input type="number" id="cfg-compaction" min="2" max="32" style="width:100%;" value="4">
+          </div>
+
+          <div style="margin-bottom:20px;">
+            <label style="font-weight:600; font-size:13px; display:flex; align-items:center; gap:8px;">
+              <input type="checkbox" id="cfg-async-fsync"> Asynchronous periodic fsync mode (High-throughput)
+            </label>
+          </div>
+
+          <button class="btn" style="background:#7c3aed; width:100%; padding:10px; font-size:14px;" onclick="saveServerConfig()">💾 Save & Apply Hot Configuration</button>
+          <pre id="cfg-status" style="margin-top:14px; display:none;"></pre>
         </div>
       </div>
     </div>
@@ -1231,10 +1370,10 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
 
         if (tables.length === 0) {
           currentTable = null;
-          document.getElementById('current-table-title').innerText = '(なし)';
+          document.getElementById('current-table-title').innerText = '(None)';
           document.getElementById('empty-state').style.display = 'block';
           document.getElementById('table-content').style.display = 'none';
-          listEl.innerHTML = '<li style="color:#9ca3af; font-size:12px; padding:4px;">テーブルなし</li>';
+          listEl.innerHTML = '<li style="color:#9ca3af; font-size:12px; padding:4px;">No tables found</li>';
           return;
         }
 
@@ -1262,13 +1401,13 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
     function switchTable(name) {
       currentTable = name;
       document.getElementById('current-table-title').innerText = name;
-      document.getElementById('lookup-result').innerText = '// ここに JSON データが表示されます';
+      document.getElementById('lookup-result').innerText = '// Record JSON payload will be displayed here';
       loadTables();
       updateTableStats();
     }
 
     async function promptCreateTable() {
-      const name = prompt('作成するテーブル名を入力してください (例: players, guilds, users):');
+      const name = prompt('Enter new table name (e.g. players, guilds, users):');
       if (!name) return;
       const clean = name.trim().toLowerCase();
       const res = await fetch('/api/table/create?name=' + encodeURIComponent(clean));
@@ -1279,27 +1418,27 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
 
     async function dropCurrentTable() {
       if (!currentTable) return;
-      if (!confirm(`本当にテーブル '${currentTable}' を完全に削除 (DROP) しますか？\nディスク上の全ファイルが削除されます。`)) return;
+      if (!confirm(`Are you sure you want to permanently DROP table '${currentTable}'?\nAll data files on disk will be deleted.`)) return;
       const res = await fetch('/api/table/drop?name=' + encodeURIComponent(currentTable));
       const data = await res.json();
       if (data.success) {
         currentTable = null;
         loadTables();
       } else {
-        alert('エラー: ' + (data.error || 'Drop failed'));
+        alert('Error: ' + (data.error || 'Drop failed'));
       }
     }
 
     async function truncateCurrentTable() {
       if (!currentTable) return;
-      if (!confirm(`本当にテーブル '${currentTable}' の全データを消去 (TRUNCATE) しますか？`)) return;
+      if (!confirm(`Are you sure you want to TRUNCATE all records from table '${currentTable}'?`)) return;
       const res = await fetch('/api/table/truncate?name=' + encodeURIComponent(currentTable));
       const data = await res.json();
       if (data.success) {
         updateTableStats();
-        alert(`テーブル '${currentTable}' を初期化しました。`);
+        alert(`Table '${currentTable}' has been truncated.`);
       } else {
-        alert('エラー: ' + (data.error || 'Truncate failed'));
+        alert('Error: ' + (data.error || 'Truncate failed'));
       }
     }
 
@@ -1307,14 +1446,14 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       if (!currentTable) return;
       const res = await fetch('/api/flush?table=' + encodeURIComponent(currentTable));
       const data = await res.json();
-      alert('Flush完了: ' + JSON.stringify(data));
+      alert('Flush completed: ' + JSON.stringify(data));
       updateTableStats();
     }
 
     async function triggerBackup() {
       const res = await fetch('/api/backup');
       const data = await res.json();
-      alert('バックアップ完了: ' + (data.backup_path || data.error));
+      alert('Backup completed: ' + (data.backup_path || data.error));
     }
 
     async function updateTableStats() {
@@ -1365,13 +1504,13 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const uuid = document.getElementById('input-uuid').value.trim();
       if (!uuid) return;
       const box = document.getElementById('lookup-result');
-      box.innerText = '検索中...';
+      box.innerText = 'Searching...';
       try {
         const res = await fetch(`/api/get?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
     }
 
@@ -1381,18 +1520,18 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const path = document.getElementById('jsonset-path').value.trim();
       const val = document.getElementById('jsonset-val').value.trim();
       if (!uuid || !path) {
-        alert('UUID と JSONパスを入力してください');
+        alert('Please enter both UUID/Key and JSON path');
         return;
       }
       const box = document.getElementById('lookup-result');
-      box.innerText = '更新中...';
+      box.innerText = 'Updating...';
       try {
         const res = await fetch(`/api/json_set?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}&path=${encodeURIComponent(path)}&value=${encodeURIComponent(val)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
         updateTableStats();
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
     }
 
@@ -1402,13 +1541,13 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const end = document.getElementById('scan-end').value.trim();
       const limit = document.getElementById('scan-limit').value.trim() || '50';
       const box = document.getElementById('scan-result');
-      box.innerText = 'スキャン中...';
+      box.innerText = 'Scanning...';
       try {
         const res = await fetch(`/api/scan?table=${encodeURIComponent(currentTable)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&limit=${encodeURIComponent(limit)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
     }
 
@@ -1417,13 +1556,13 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const q = document.getElementById('filter-query').value.trim();
       const limit = document.getElementById('filter-limit').value.trim() || '50';
       const box = document.getElementById('filter-result');
-      box.innerText = '検索中...';
+      box.innerText = 'Filtering...';
       try {
         const res = await fetch(`/api/filter?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}&limit=${encodeURIComponent(limit)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
     }
 
@@ -1431,13 +1570,13 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       if (!currentTable) return;
       const q = document.getElementById('filter-query').value.trim();
       const box = document.getElementById('filter-result');
-      box.innerText = '件数カウント中...';
+      box.innerText = 'Counting records...';
       try {
         const res = await fetch(`/api/count?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
     }
 
@@ -1445,19 +1584,19 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       if (!currentTable) return;
       const q = document.getElementById('filter-query').value.trim();
       if (!q) {
-        alert('削除条件 (Query) を指定してください');
+        alert('Please specify a deletion filter query');
         return;
       }
-      if (!confirm(`条件 [${q}] に一致するすべてのレコードを一括削除 (DEL_WHERE) しますか？`)) return;
+      if (!confirm(`Are you sure you want to batch delete (DEL_WHERE) all records matching condition [${q}]?`)) return;
       const box = document.getElementById('filter-result');
-      box.innerText = '一括削除中...';
+      box.innerText = 'Deleting records...';
       try {
         const res = await fetch(`/api/del_where?table=${encodeURIComponent(currentTable)}&query=${encodeURIComponent(q)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
         updateTableStats();
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
     }
 
@@ -1466,17 +1605,17 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const field = document.getElementById('stats-field').value.trim();
       const q = document.getElementById('stats-query').value.trim();
       if (!field) {
-        alert('集計対象のフィールド名を入力してください');
+        alert('Please enter a target numeric field name');
         return;
       }
       const box = document.getElementById('stats-result');
-      box.innerText = '集計計算中...';
+      box.innerText = 'Calculating statistics...';
       try {
         const res = await fetch(`/api/stats_calc?table=${encodeURIComponent(currentTable)}&field=${encodeURIComponent(field)}&query=${encodeURIComponent(q)}`);
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
     }
 
@@ -1488,9 +1627,9 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       try {
         const res = await fetch(`/api/exists?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}`);
         const data = await res.json();
-        box.innerText = '存在確認 (EXISTS): ' + (data.exists ? '存在します (TRUE)' : '存在しません (FALSE)');
+        box.innerText = 'Key Existence (EXISTS): ' + (data.exists ? 'EXISTS (TRUE)' : 'NOT FOUND (FALSE)');
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
     }
 
@@ -1505,8 +1644,17 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
         const data = await res.json();
         box.innerText = JSON.stringify(data, null, 2);
       } catch (e) {
-        box.innerText = 'エラー: ' + e;
+        box.innerText = 'Error: ' + e;
       }
+    }
+
+    function onRankModeChange() {
+      const mode = document.getElementById('rank-mode-select').value;
+      document.getElementById('rank-inputs-top').style.display = mode === 'top' ? 'flex' : 'none';
+      document.getElementById('rank-inputs-around-key').style.display = mode === 'around_key' ? 'flex' : 'none';
+      document.getElementById('rank-inputs-around-score').style.display = mode === 'around_score' ? 'flex' : 'none';
+      document.getElementById('rank-inputs-score-range').style.display = mode === 'score_range' ? 'flex' : 'none';
+      document.getElementById('rank-inputs-rank-range').style.display = mode === 'rank_range' ? 'flex' : 'none';
     }
 
     async function loadRankings() {
@@ -1514,16 +1662,53 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const field = document.getElementById('select-rank-field').value;
       const tbody = document.getElementById('rank-tbody');
       if (!field) {
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#9ca3af;">インデックスが登録されていません</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#9ca3af;">No indices registered</td></tr>';
         return;
       }
-      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">読み込み中...</td></tr>';
+      const mode = document.getElementById('rank-mode-select').value;
+      let url = `/api/rankings?table=${encodeURIComponent(currentTable)}&field=${encodeURIComponent(field)}&mode=${encodeURIComponent(mode)}`;
+
+      if (mode === 'top') {
+        const lim = document.getElementById('rank-top-limit').value || '50';
+        url += `&limit=${encodeURIComponent(lim)}`;
+      } else if (mode === 'around_key') {
+        const key = document.getElementById('rank-key-input').value.trim();
+        const lim = document.getElementById('rank-key-limit').value || '10';
+        if (!key) {
+          alert('Please enter target UUID or key');
+          return;
+        }
+        url += `&key=${encodeURIComponent(key)}&limit=${encodeURIComponent(lim)}`;
+      } else if (mode === 'around_score') {
+        const score = document.getElementById('rank-score-input').value.trim();
+        const lim = document.getElementById('rank-score-limit').value || '10';
+        if (!score) {
+          alert('Please enter center score');
+          return;
+        }
+        url += `&score=${encodeURIComponent(score)}&limit=${encodeURIComponent(lim)}`;
+      } else if (mode === 'score_range') {
+        const min = document.getElementById('rank-min-score').value.trim();
+        const max = document.getElementById('rank-max-score').value.trim();
+        const lim = document.getElementById('rank-range-limit').value || '50';
+        if (!min || !max) {
+          alert('Please enter both min and max score');
+          return;
+        }
+        url += `&min=${encodeURIComponent(min)}&max=${encodeURIComponent(max)}&limit=${encodeURIComponent(lim)}`;
+      } else if (mode === 'rank_range') {
+        const start = document.getElementById('rank-start-rank').value.trim() || '1';
+        const end = document.getElementById('rank-end-rank').value.trim() || '50';
+        url += `&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+      }
+
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;">Loading rankings...</td></tr>';
       try {
-        const res = await fetch(`/api/top?table=${encodeURIComponent(currentTable)}&field=${encodeURIComponent(field)}&limit=50`);
+        const res = await fetch(url);
         const data = await res.json();
         tbody.innerHTML = '';
         if (!data.rankings || data.rankings.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#9ca3af;">データがありません</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#9ca3af;">No matching records found</td></tr>';
           return;
         }
         data.rankings.forEach(item => {
@@ -1536,7 +1721,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
           tbody.appendChild(tr);
         });
       } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#dc2626;">エラー: ${e}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:#dc2626;">Error: ${e}</td></tr>`;
       }
     }
 
@@ -1580,15 +1765,38 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       
       const box = document.getElementById('cfg-status');
       box.style.display = 'block';
-      box.innerText = '設定適用中...';
+      box.innerText = 'Applying configuration...';
       try {
         const res = await fetch('/api/config/update?' + q);
         const data = await res.json();
-        box.innerText = '設定が正常に保存され、即時適用されました:\n' + JSON.stringify(data, null, 2);
+        box.innerText = 'Configuration saved and applied live:\n' + JSON.stringify(data, null, 2);
         updateTableStats();
       } catch (e) {
-        box.innerText = '設定保存エラー: ' + e;
+        box.innerText = 'Error saving configuration: ' + e;
       }
+    }
+
+    function openServerSettingsView() {
+      document.getElementById('table-view-section').style.display = 'none';
+      document.getElementById('settings-view').style.display = 'block';
+      document.querySelectorAll('.table-item').forEach(el => el.classList.remove('active'));
+      const btn = document.getElementById('btn-side-settings');
+      btn.style.background = '#7c3aed';
+      btn.style.color = '#ffffff';
+      loadServerConfig();
+    }
+
+    function switchTable(name) {
+      document.getElementById('settings-view').style.display = 'none';
+      document.getElementById('table-view-section').style.display = 'block';
+      const btn = document.getElementById('btn-side-settings');
+      btn.style.background = '#f5f3ff';
+      btn.style.color = '#6d28d9';
+      currentTable = name;
+      document.getElementById('current-table-title').innerText = name;
+      document.getElementById('lookup-result').innerText = '// Record JSON payload will be displayed here';
+      loadTables();
+      updateTableStats();
     }
 
     function showTab(name) {
@@ -1597,7 +1805,6 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       event.target.classList.add('active');
       document.getElementById('tab-' + name).classList.add('active');
       if (name === 'rank') loadRankings();
-      if (name === 'settings') loadServerConfig();
     }
 
     loadTables().then(() => {
@@ -1605,8 +1812,10 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       loadServerConfig();
     });
     setInterval(() => {
-      loadTables();
-      updateTableStats();
+      if (document.getElementById('table-view-section').style.display !== 'none') {
+        loadTables();
+        updateTableStats();
+      }
     }, 3000);
   </script>
 </body>

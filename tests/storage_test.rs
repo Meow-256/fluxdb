@@ -2,11 +2,11 @@ use bytes::Bytes;
 use tempfile::tempdir;
 use uuid::Uuid;
 
-use meow_database::core::types::{OpType, PlayerId, ValueEntry};
-use meow_database::index::IndexManager;
-use meow_database::storage::sstable::SsTableBuilder;
-use meow_database::storage::wal::{WalConfig, WalRecovery, WalWriter};
-use meow_database::storage::{EngineConfig, StorageEngine};
+use fluxdb::core::types::{OpType, PlayerId, ValueEntry};
+use fluxdb::index::IndexManager;
+use fluxdb::storage::sstable::SsTableBuilder;
+use fluxdb::storage::wal::{WalConfig, WalRecovery, WalWriter};
+use fluxdb::storage::{EngineConfig, StorageEngine};
 
 #[tokio::test]
 async fn test_wal_write_and_recovery() {

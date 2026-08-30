@@ -23,6 +23,10 @@ pub enum Command {
     IndexList { table: String },
     Top { table: String, path: String, limit: usize },
     Rank { table: String, path: String, key: PlayerId },
+    RankAroundKey { table: String, path: String, key: PlayerId, limit: usize },
+    RankAroundScore { table: String, path: String, score: f64, limit: usize },
+    RankScoreRange { table: String, path: String, min_score: f64, max_score: f64, limit: usize },
+    RankRange { table: String, path: String, start_rank: usize, end_rank: usize },
     Scan { table: String, start_key: Option<PlayerId>, end_key: Option<PlayerId>, limit: usize },
     Filter { table: String, query: String, limit: usize },
     Count { table: String, query: Option<String> },
@@ -352,6 +356,83 @@ impl CommandParser {
                 let key = PlayerId::parse(uuid_str)?;
 
                 Ok(Command::Rank { table, path, key })
+            }
+
+            "RANK.KEY" | "AROUND_KEY" => {
+                let mut parts = rest.split_whitespace();
+                let table = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.KEY <table> <json.path> <UUID/key> [limit]".into())
+                })?.to_lowercase();
+                let path = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.KEY <table> <json.path> <UUID/key> [limit]".into())
+                })?.to_string();
+                let key_str = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.KEY <table> <json.path> <UUID/key> [limit]".into())
+                })?;
+                let key = PlayerId::parse(key_str)?;
+                let limit = parts.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(10).min(1000);
+
+                Ok(Command::RankAroundKey { table, path, key, limit })
+            }
+
+            "RANK.SCORE" | "AROUND" | "AROUND_SCORE" => {
+                let mut parts = rest.split_whitespace();
+                let table = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.SCORE <table> <json.path> <score> [limit]".into())
+                })?.to_lowercase();
+                let path = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.SCORE <table> <json.path> <score> [limit]".into())
+                })?.to_string();
+                let score_str = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.SCORE <table> <json.path> <score> [limit]".into())
+                })?;
+                let score = score_str.parse::<f64>().map_err(|_| {
+                    DbError::InvalidCommand("Invalid score number".into())
+                })?;
+                let limit = parts.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(10).min(1000);
+
+                Ok(Command::RankAroundScore { table, path, score, limit })
+            }
+
+            "RANK.RANGE_SCORE" | "SCORE_RANGE" => {
+                let mut parts = rest.split_whitespace();
+                let table = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.RANGE_SCORE <table> <json.path> <min_score> <max_score> [limit]".into())
+                })?.to_lowercase();
+                let path = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.RANGE_SCORE <table> <json.path> <min_score> <max_score> [limit]".into())
+                })?.to_string();
+                let min_str = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.RANGE_SCORE <table> <json.path> <min_score> <max_score> [limit]".into())
+                })?;
+                let max_str = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.RANGE_SCORE <table> <json.path> <min_score> <max_score> [limit]".into())
+                })?;
+                let min_score = min_str.parse::<f64>().map_err(|_| DbError::InvalidCommand("Invalid min_score number".into()))?;
+                let max_score = max_str.parse::<f64>().map_err(|_| DbError::InvalidCommand("Invalid max_score number".into()))?;
+                let limit = parts.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(50).min(1000);
+
+                Ok(Command::RankScoreRange { table, path, min_score, max_score, limit })
+            }
+
+            "RANK.RANGE" | "RANK_RANGE" => {
+                let mut parts = rest.split_whitespace();
+                let table = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.RANGE <table> <json.path> <start_rank> <end_rank>".into())
+                })?.to_lowercase();
+                let path = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.RANGE <table> <json.path> <start_rank> <end_rank>".into())
+                })?.to_string();
+                let start_str = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.RANGE <table> <json.path> <start_rank> <end_rank>".into())
+                })?;
+                let end_str = parts.next().ok_or_else(|| {
+                    DbError::InvalidCommand("Usage: RANK.RANGE <table> <json.path> <start_rank> <end_rank>".into())
+                })?;
+                let start_rank = start_str.parse::<usize>().map_err(|_| DbError::InvalidCommand("Invalid start_rank integer".into()))?;
+                let end_rank = end_str.parse::<usize>().map_err(|_| DbError::InvalidCommand("Invalid end_rank integer".into()))?;
+
+                Ok(Command::RankRange { table, path, start_rank, end_rank })
             }
 
             "SCAN" | "RANGE" => {

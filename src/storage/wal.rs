@@ -64,7 +64,7 @@ impl WalWriter {
         let async_fsync = config.async_fsync;
 
         std::thread::Builder::new()
-            .name("meowdb-wal-writer".to_string())
+            .name("fluxdb-wal-writer".to_string())
             .spawn(move || {
                 let mut writer = BufWriter::with_capacity(1024 * 1024, file);
                 let mut batch = Vec::with_capacity(2048);

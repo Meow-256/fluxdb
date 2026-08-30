@@ -24,7 +24,7 @@ impl Server {
 
     pub async fn run(&self) -> Result<()> {
         let listener = TcpListener::bind(self.addr).await?;
-        info!("MeowDB server listening on {}", self.addr);
+        info!("FluxDB server listening on {}", self.addr);
         if self.require_pass.is_some() {
             info!("Password authentication (AUTH): ENABLED");
         }
@@ -401,6 +401,92 @@ async fn execute_single_command(
                     }
                     None => b"$-1\r\n".to_vec(),
                 },
+                None => format!("-ERR Index '{}:{}' not found.\r\n", table, path).into_bytes(),
+            }
+        }
+
+        Command::RankAroundKey { table, path, key, limit } => {
+            match table_manager.get_table(&table).and_then(|t| t.index_manager.get_index(&path)) {
+                Some(index) => match index.get_around_key(&key, limit) {
+                    Some(entries) => {
+                        let formatted: Vec<serde_json::Value> = entries
+                            .into_iter()
+                            .map(|(player, score, rank)| {
+                                serde_json::json!({
+                                    "rank": rank,
+                                    "uuid": player.to_string(),
+                                    "score": score,
+                                })
+                            })
+                            .collect();
+                        let json_res = serde_json::to_string(&formatted).unwrap_or_else(|_| "[]".into());
+                        format!("${}\r\n{}\r\n", json_res.len(), json_res).into_bytes()
+                    }
+                    None => b"$-1\r\n".to_vec(),
+                },
+                None => format!("-ERR Index '{}:{}' not found.\r\n", table, path).into_bytes(),
+            }
+        }
+
+        Command::RankAroundScore { table, path, score, limit } => {
+            match table_manager.get_table(&table).and_then(|t| t.index_manager.get_index(&path)) {
+                Some(index) => {
+                    let entries = index.get_around_score(score, limit);
+                    let formatted: Vec<serde_json::Value> = entries
+                        .into_iter()
+                        .map(|(player, score, rank)| {
+                            serde_json::json!({
+                                "rank": rank,
+                                "uuid": player.to_string(),
+                                "score": score,
+                            })
+                        })
+                        .collect();
+                    let json_res = serde_json::to_string(&formatted).unwrap_or_else(|_| "[]".into());
+                    format!("${}\r\n{}\r\n", json_res.len(), json_res).into_bytes()
+                }
+                None => format!("-ERR Index '{}:{}' not found.\r\n", table, path).into_bytes(),
+            }
+        }
+
+        Command::RankScoreRange { table, path, min_score, max_score, limit } => {
+            match table_manager.get_table(&table).and_then(|t| t.index_manager.get_index(&path)) {
+                Some(index) => {
+                    let entries = index.get_score_range(min_score, max_score, limit);
+                    let formatted: Vec<serde_json::Value> = entries
+                        .into_iter()
+                        .map(|(player, score, rank)| {
+                            serde_json::json!({
+                                "rank": rank,
+                                "uuid": player.to_string(),
+                                "score": score,
+                            })
+                        })
+                        .collect();
+                    let json_res = serde_json::to_string(&formatted).unwrap_or_else(|_| "[]".into());
+                    format!("${}\r\n{}\r\n", json_res.len(), json_res).into_bytes()
+                }
+                None => format!("-ERR Index '{}:{}' not found.\r\n", table, path).into_bytes(),
+            }
+        }
+
+        Command::RankRange { table, path, start_rank, end_rank } => {
+            match table_manager.get_table(&table).and_then(|t| t.index_manager.get_index(&path)) {
+                Some(index) => {
+                    let entries = index.get_rank_range(start_rank, end_rank);
+                    let formatted: Vec<serde_json::Value> = entries
+                        .into_iter()
+                        .map(|(player, score, rank)| {
+                            serde_json::json!({
+                                "rank": rank,
+                                "uuid": player.to_string(),
+                                "score": score,
+                            })
+                        })
+                        .collect();
+                    let json_res = serde_json::to_string(&formatted).unwrap_or_else(|_| "[]".into());
+                    format!("${}\r\n{}\r\n", json_res.len(), json_res).into_bytes()
+                }
                 None => format!("-ERR Index '{}:{}' not found.\r\n", table, path).into_bytes(),
             }
         }

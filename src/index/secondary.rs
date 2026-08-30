@@ -175,6 +175,97 @@ impl FieldIndex {
         Some((higher_count + 1, score.0))
     }
 
+    pub fn get_rank_range(&self, start_rank: usize, end_rank: usize) -> Vec<(PlayerId, f64, usize)> {
+        if start_rank == 0 || start_rank > end_rank {
+            return Vec::new();
+        }
+        let take_count = end_rank - start_rank + 1;
+        let skip_count = start_rank - 1;
+
+        self.sorted_map
+            .iter()
+            .rev()
+            .enumerate()
+            .skip(skip_count)
+            .take(take_count)
+            .map(|(idx, item)| {
+                let (score, player) = *item.key();
+                (player, score.0, idx + 1)
+            })
+            .collect()
+    }
+
+    pub fn get_around_key(&self, player: &PlayerId, limit: usize) -> Option<Vec<(PlayerId, f64, usize)>> {
+        let (rank, _) = self.get_rank(player)?;
+        let total = self.sorted_map.len();
+        if total == 0 || limit == 0 {
+            return Some(Vec::new());
+        }
+
+        let half = limit / 2;
+        let mut start_rank = rank.saturating_sub(half).max(1);
+        let mut end_rank = start_rank + limit - 1;
+
+        if end_rank > total {
+            end_rank = total;
+            start_rank = end_rank.saturating_sub(limit - 1).max(1);
+        }
+
+        Some(self.get_rank_range(start_rank, end_rank))
+    }
+
+    pub fn get_around_score(&self, target_score: f64, limit: usize) -> Vec<(PlayerId, f64, usize)> {
+        let target_ord = OrderedScore(target_score);
+        let total = self.sorted_map.len();
+        if total == 0 || limit == 0 {
+            return Vec::new();
+        }
+
+        // Find how many entries have score > target_score
+        let higher_count = self
+            .sorted_map
+            .iter()
+            .rev()
+            .take_while(|item| item.key().0 > target_ord)
+            .count();
+
+        let approx_rank = (higher_count + 1).min(total);
+        let half = limit / 2;
+        let mut start_rank = approx_rank.saturating_sub(half).max(1);
+        let mut end_rank = start_rank + limit - 1;
+
+        if end_rank > total {
+            end_rank = total;
+            start_rank = end_rank.saturating_sub(limit - 1).max(1);
+        }
+
+        self.get_rank_range(start_rank, end_rank)
+    }
+
+    pub fn get_score_range(&self, min_score: f64, max_score: f64, limit: usize) -> Vec<(PlayerId, f64, usize)> {
+        let min_ord = OrderedScore(min_score);
+        let max_ord = OrderedScore(max_score);
+        if min_score > max_score || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut results = Vec::new();
+        for (idx, item) in self.sorted_map.iter().rev().enumerate() {
+            let (score, player) = *item.key();
+            if score > max_ord {
+                continue;
+            }
+            if score < min_ord {
+                break; // Because sorted descending
+            }
+            results.push((player, score.0, idx + 1));
+            if results.len() >= limit {
+                break;
+            }
+        }
+        results
+    }
+
     pub fn len(&self) -> usize {
         self.sorted_map.len()
     }
@@ -257,4 +348,47 @@ mod tests {
         assert_eq!(extract_number_from_json("stats.wins", json), Some(50.0));
         assert_eq!(extract_number_from_json("stats.losses", json), None);
     }
+
+    #[test]
+    fn test_flexible_ranking_queries() {
+        let idx = FieldIndex::new("stats.score".to_string());
+        // Insert 100 players with scores 10, 20, 30 ... 1000
+        for i in 1..=100 {
+            let pid = PlayerId::new(i as u128);
+            idx.update(pid, (i * 10) as f64);
+        }
+        assert_eq!(idx.len(), 100);
+
+        // 1. Top 5
+        let top5 = idx.get_top(5);
+        assert_eq!(top5.len(), 5);
+        assert_eq!(top5[0].2, 1); // Rank 1
+        assert_eq!(top5[0].1, 1000.0); // Score 1000
+        assert_eq!(top5[4].2, 5); // Rank 5
+        assert_eq!(top5[4].1, 960.0);
+
+        // 2. Rank Range 30 to 50
+        let r30_50 = idx.get_rank_range(30, 50);
+        assert_eq!(r30_50.len(), 21);
+        assert_eq!(r30_50[0].2, 30);
+        assert_eq!(r30_50.last().unwrap().2, 50);
+
+        // 3. Around Key (player with score 500, which is rank 51)
+        let p50 = PlayerId::new(50);
+        let around_p50 = idx.get_around_key(&p50, 10).unwrap();
+        assert_eq!(around_p50.len(), 10);
+        assert!(around_p50.iter().any(|(p, _, _)| *p == p50));
+
+        // 4. Around Score (center score 700 -> rank 31)
+        let around_s700 = idx.get_around_score(700.0, 10);
+        assert_eq!(around_s700.len(), 10);
+        assert!(around_s700.iter().any(|(_, s, _)| *s == 700.0));
+
+        // 5. Score Range 50 to 100
+        let range_scores = idx.get_score_range(50.0, 100.0, 50);
+        assert_eq!(range_scores.len(), 6); // 100, 90, 80, 70, 60, 50
+        assert_eq!(range_scores[0].1, 100.0);
+        assert_eq!(range_scores.last().unwrap().1, 50.0);
+    }
 }
+

@@ -7,8 +7,8 @@ use tokio::net::TcpStream;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
-#[command(name = "meowdb-bench")]
-#[command(about = "High-concurrency benchmark tool for MeowDB")]
+#[command(name = "fluxdb-bench")]
+#[command(about = "High-concurrency benchmark tool for FluxDB")]
 struct Args {
     #[arg(short, long, default_value = "127.0.0.1:7379")]
     server: String,
@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     println!("============================================================");
-    println!("  MeowDB High-Concurrency Benchmark Tool (Massive Scale)");
+    println!("  FluxDB High-Concurrency Benchmark Tool (Massive Scale)");
     println!("============================================================");
     println!("Server:      {}", args.server);
     println!("Target Table: {}", args.table);

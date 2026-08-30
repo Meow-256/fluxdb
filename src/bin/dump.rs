@@ -6,8 +6,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 #[derive(Parser, Debug)]
-#[command(name = "meowdb-dump")]
-#[command(about = "Export MeowDB tables into NDJSON format")]
+#[command(name = "fluxdb-dump")]
+#[command(about = "Export FluxDB tables into NDJSON format")]
 struct Args {
     #[arg(short, long, default_value = "127.0.0.1:7379")]
     server: String,
@@ -26,7 +26,7 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    println!("Connecting to MeowDB server at {}...", args.server);
+    println!("Connecting to FluxDB server at {}...", args.server);
     let mut stream = TcpStream::connect(&args.server).await?;
     stream.set_nodelay(true)?;
 

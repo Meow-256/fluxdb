@@ -1,13 +1,13 @@
 import * as net from 'net';
 
-export interface MeowDBOptions {
+export interface FluxDBOptions {
   host?: string;
   port?: number;
   password?: string;
   table?: string;
 }
 
-export class MeowDB {
+export class FluxDB {
   private host: string;
   private port: number;
   private password?: string;
@@ -19,7 +19,7 @@ export class MeowDB {
     reject: (err: Error) => void;
   }> = [];
 
-  constructor(options: MeowDBOptions = {}) {
+  constructor(options: FluxDBOptions = {}) {
     this.host = options.host || '127.0.0.1';
     this.port = options.port || 7379;
     this.password = options.password;
@@ -137,6 +137,36 @@ export class MeowDB {
     return raw ? JSON.parse(raw) : [];
   }
 
+  public async rank(path: string, key: string, table?: string): Promise<{ uuid: string, rank: number, score: number, total_ranked: number } | null> {
+    const t = table || this.defaultTable;
+    const raw = await this.send(`RANK ${t} ${path} ${key}`);
+    return raw ? JSON.parse(raw) : null;
+  }
+
+  public async aroundKey(path: string, key: string, limit: number = 10, table?: string): Promise<any[]> {
+    const t = table || this.defaultTable;
+    const raw = await this.send(`RANK.KEY ${t} ${path} ${key} ${limit}`);
+    return raw ? JSON.parse(raw) : [];
+  }
+
+  public async aroundScore(path: string, score: number, limit: number = 10, table?: string): Promise<any[]> {
+    const t = table || this.defaultTable;
+    const raw = await this.send(`RANK.SCORE ${t} ${path} ${score} ${limit}`);
+    return raw ? JSON.parse(raw) : [];
+  }
+
+  public async rankingByScoreRange(path: string, minScore: number, maxScore: number, limit: number = 50, table?: string): Promise<any[]> {
+    const t = table || this.defaultTable;
+    const raw = await this.send(`RANK.RANGE_SCORE ${t} ${path} ${minScore} ${maxScore} ${limit}`);
+    return raw ? JSON.parse(raw) : [];
+  }
+
+  public async rankingByRankRange(path: string, startRank: number, endRank: number, table?: string): Promise<any[]> {
+    const t = table || this.defaultTable;
+    const raw = await this.send(`RANK.RANGE ${t} ${path} ${startRank} ${endRank}`);
+    return raw ? JSON.parse(raw) : [];
+  }
+
   public async count(query?: string, table?: string): Promise<number> {
     const t = table || this.defaultTable;
     const cmd = query ? `COUNT ${t} ${query}` : `COUNT ${t}`;
@@ -157,8 +187,8 @@ export class MeowDB {
   }
 }
 
-export const VeloxDB = MeowDB;
-export const FluxDB = MeowDB;
-export type VeloxDBOptions = MeowDBOptions;
-export type FluxDBOptions = MeowDBOptions;
+export const MeowDB = FluxDB;
+export const VeloxDB = FluxDB;
+export type MeowDBOptions = FluxDBOptions;
+export type VeloxDBOptions = FluxDBOptions;
 export default FluxDB;

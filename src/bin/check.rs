@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
 use clap::Parser;
-use meow_database::storage::sstable::SsTable;
-use meow_database::storage::wal::WalRecovery;
+use fluxdb::storage::sstable::SsTable;
+use fluxdb::storage::wal::WalRecovery;
 
 #[derive(Parser, Debug)]
-#[command(name = "meowdb-check")]
-#[command(about = "Integrity check and diagnostics utility for MeowDB data files")]
+#[command(name = "fluxdb-check")]
+#[command(about = "Integrity check and diagnostics utility for FluxDB data files")]
 struct Args {
     #[arg(short, long, default_value = "./data")]
     data_dir: PathBuf,
@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     println!("============================================================");
-    println!("  MeowDB Database Integrity & Health Diagnostics Tool");
+    println!("  FluxDB Database Integrity & Health Diagnostics Tool");
     println!("============================================================");
     println!("Target data directory: {}", args.data_dir.display());
 

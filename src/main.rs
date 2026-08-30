@@ -4,15 +4,15 @@ use clap::Parser;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use meow_database::server::{HttpServer, Server};
-use meow_database::storage::wal::WalConfig;
-use meow_database::table::TableManager;
+use fluxdb::server::{HttpServer, Server};
+use fluxdb::storage::wal::WalConfig;
+use fluxdb::table::TableManager;
 
 #[derive(Parser, Debug)]
-#[command(name = "meowdb-server")]
+#[command(name = "fluxdb-server")]
 #[command(about = "High-Performance UUID-Optimized LSM-Tree Database with Multi-Table, Secondary JSON Ranking, and Full Production Tooling", long_about = None)]
 struct Args {
-    /// Path to TOML configuration file (e.g. meowdb.toml)
+    /// Path to TOML configuration file (e.g. fluxdb.toml)
     #[arg(short = 'c', long)]
     config: Option<PathBuf>,
 
@@ -29,27 +29,28 @@ struct Args {
     #[arg(long)]
     require_pass: Option<String>,
 
-    /// Maximum parallel worker threads (default: auto-detected CPU cores)
+    /// Maximum worker threads (0 for auto)
     #[arg(long)]
     max_threads: Option<usize>,
 
-    /// Block cache size in Megabytes (default: 0 = OFF)
-    #[arg(long, default_value_t = 0)]
+    /// LRU Block Cache capacity in Megabytes (0 = disabled)
+    #[arg(long, default_value = "256")]
     block_cache_mb: usize,
 
-    /// MemTable size in Megabytes (MB)
-    #[arg(long, default_value_t = 256)]
+    /// RAM limit for MemTable before SSTable flush (in MB)
+    #[arg(long, default_value = "256")]
     memtable_size_mb: usize,
 
-    #[arg(long, default_value_t = 4)]
+    /// Trigger compaction after N SSTables
+    #[arg(long, default_value = "4")]
     compaction_trigger: usize,
 
-    /// Microseconds window to batch concurrent writes into a single fsync (default: 1000us = 1ms)
-    #[arg(long, default_value_t = 1000)]
+    /// Group Commit delay window in microseconds
+    #[arg(long, default_value = "1000")]
     commit_delay_us: u64,
 
-    /// Enable asynchronous periodic fsync instead of fsyncing every commit batch (default: false)
-    #[arg(long, default_value_t = false)]
+    /// High-throughput asynchronous fsync mode
+    #[arg(long)]
     async_fsync: bool,
 }
 
@@ -89,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check for TOML config file
     let config_path = args.config.clone().or_else(|| {
-        let p = PathBuf::from("meowdb.toml");
+        let p = PathBuf::from("fluxdb.toml");
         if p.exists() { Some(p) } else { None }
     });
 
@@ -118,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let default_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let threads = args.max_threads.unwrap_or(default_threads);
 
-    info!("Starting MeowDB server...");
+    info!("Starting FluxDB server...");
     info!("Data directory: {}", args.data_dir.display());
     info!("Max worker threads: {}", threads);
     info!("MemTable max size: {} MB ({} bytes)", args.memtable_size_mb, memtable_bytes);
