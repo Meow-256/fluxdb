@@ -530,17 +530,109 @@ async fn handle_http_client(
                         send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
                     }
                     Ok(None) => {
-                        let resp = serde_json::json!({ "found": false, "error": "UUID not found or expired" });
-                        send_response(&mut stream, "404 Not Found", "application/json", &resp.to_string()).await?;
+                        // Fallback search: scan records to find matching original string key or value
+                        let search_term = uuid_str.trim().to_lowercase();
+                        let mut fallback_match = None;
+                        if !search_term.is_empty() {
+                            if let Ok(entries) = table.engine.scan(None, None, 10000) {
+                                for (k, v) in entries {
+                                    let val_str = String::from_utf8_lossy(&v);
+                                    let parsed = serde_json::from_str::<serde_json::Value>(&val_str)
+                                        .unwrap_or(serde_json::Value::String(val_str.into_owned()));
+                                    
+                                    let mut matched = false;
+                                    if let serde_json::Value::Object(ref map) = parsed {
+                                        for candidate in &["key", "name", "username", "player_name", "user", "player", "id", "title", "label", "uuid"] {
+                                            if let Some(serde_json::Value::String(s)) = map.get(*candidate) {
+                                                if s.trim().to_lowercase() == search_term {
+                                                    matched = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    } else if let serde_json::Value::String(ref s) = parsed {
+                                        if s.trim().to_lowercase() == search_term {
+                                            matched = true;
+                                        }
+                                    }
+
+                                    if matched {
+                                        let ttl = table.engine.get_ttl(&k);
+                                        fallback_match = Some((k, ttl, parsed));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some((found_player, ttl, data)) = fallback_match {
+                            let resp = serde_json::json!({
+                                "found": true,
+                                "table": table_name,
+                                "uuid": found_player.to_string(),
+                                "ttl_seconds": ttl,
+                                "data": data
+                            });
+                            send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
+                        } else {
+                            let resp = serde_json::json!({ "found": false, "error": "Key or UUID not found" });
+                            send_response(&mut stream, "404 Not Found", "application/json", &resp.to_string()).await?;
+                        }
                     }
                     Err(e) => {
                         let resp = serde_json::json!({ "error": e.to_string() });
                         send_response(&mut stream, "500 Internal Error", "application/json", &resp.to_string()).await?;
                     }
                 },
-                Err(e) => {
-                    let resp = serde_json::json!({ "error": format!("Invalid UUID: {}", e) });
-                    send_response(&mut stream, "400 Bad Request", "application/json", &resp.to_string()).await?;
+                Err(_) => {
+                    // Fallback search when UUID parsing fails
+                    let search_term = uuid_str.trim().to_lowercase();
+                    let mut fallback_match = None;
+                    if !search_term.is_empty() {
+                        if let Ok(entries) = table.engine.scan(None, None, 10000) {
+                            for (k, v) in entries {
+                                let val_str = String::from_utf8_lossy(&v);
+                                let parsed = serde_json::from_str::<serde_json::Value>(&val_str)
+                                    .unwrap_or(serde_json::Value::String(val_str.into_owned()));
+                                
+                                let mut matched = false;
+                                if let serde_json::Value::Object(ref map) = parsed {
+                                    for candidate in &["key", "name", "username", "player_name", "user", "player", "id", "title", "label", "uuid"] {
+                                        if let Some(serde_json::Value::String(s)) = map.get(*candidate) {
+                                            if s.trim().to_lowercase() == search_term {
+                                                matched = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else if let serde_json::Value::String(ref s) = parsed {
+                                    if s.trim().to_lowercase() == search_term {
+                                        matched = true;
+                                    }
+                                }
+
+                                if matched {
+                                    let ttl = table.engine.get_ttl(&k);
+                                    fallback_match = Some((k, ttl, parsed));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some((found_player, ttl, data)) = fallback_match {
+                        let resp = serde_json::json!({
+                            "found": true,
+                            "table": table_name,
+                            "uuid": found_player.to_string(),
+                            "ttl_seconds": ttl,
+                            "data": data
+                        });
+                        send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
+                    } else {
+                        let resp = serde_json::json!({ "found": false, "error": "Key or UUID not found" });
+                        send_response(&mut stream, "404 Not Found", "application/json", &resp.to_string()).await?;
+                    }
                 }
             }
         } else {
@@ -735,6 +827,11 @@ async fn handle_http_client(
                                         break;
                                     }
                                 }
+                            }
+                        } else if let serde_json::Value::String(ref s) = parsed {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() && trimmed.len() <= 64 {
+                                label = trimmed.to_string();
                             }
                         }
 
@@ -1932,12 +2029,30 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       });
     }
 
+    function formatPayload(data) {
+      if (data === undefined || data === null) return '// No data';
+      if (typeof data === 'string') {
+        try {
+          const parsed = JSON.parse(data);
+          if (typeof parsed === 'object' && parsed !== null) {
+            return JSON.stringify(parsed, null, 2);
+          }
+        } catch (e) {}
+        return data;
+      }
+      if (typeof data === 'object') {
+        return JSON.stringify(data, null, 2);
+      }
+      return String(data);
+    }
+
     function filterShowKeysList() {
       const filter = (document.getElementById('show-key-filter').value || '').trim().toLowerCase();
       const filtered = showAllRecords.filter(r => {
         if ((r.label || '').toLowerCase().includes(filter)) return true;
         if ((r.uuid || '').toLowerCase().includes(filter)) return true;
-        if (r.data && JSON.stringify(r.data).toLowerCase().includes(filter)) return true;
+        const strData = typeof r.data === 'string' ? r.data : (r.data ? JSON.stringify(r.data) : '');
+        if (strData.toLowerCase().includes(filter)) return true;
         return false;
       });
       renderShowKeysList(filtered);
@@ -1962,17 +2077,13 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       document.getElementById('show-selected-key').innerHTML = keyHeader;
 
       const box = document.getElementById('show-data-view');
-      if (rec.data !== undefined) {
-        box.innerText = JSON.stringify(rec.data, null, 2);
-      } else {
-        box.innerText = '// No data';
-      }
+      box.innerText = formatPayload(rec.data);
     }
 
     function copyShowData() {
       const text = document.getElementById('show-data-view').innerText;
       navigator.clipboard.writeText(text).then(() => {
-        alert('Copied record JSON data to clipboard!');
+        alert('Copied record data to clipboard!');
       }).catch(err => {
         console.error('Failed to copy', err);
       });
@@ -2080,7 +2191,13 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       try {
         const res = await authFetch(`/api/get?table=${encodeURIComponent(currentTable)}&uuid=${encodeURIComponent(uuid)}`);
         const data = await res.json();
-        box.innerText = JSON.stringify(data, null, 2);
+        if (data.found && data.data !== undefined) {
+          const ttlText = data.ttl_seconds !== null && data.ttl_seconds !== undefined ? ` [TTL: ${data.ttl_seconds}s]` : '';
+          const header = `// Key / UUID: ${data.uuid}${ttlText}\n`;
+          box.innerText = header + formatPayload(data.data);
+        } else {
+          box.innerText = JSON.stringify(data, null, 2);
+        }
       } catch (e) {
         box.innerText = 'Error: ' + e;
       }
