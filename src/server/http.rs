@@ -81,7 +81,7 @@ async fn handle_http_client(
     } else if path == "/api/auth/verify" {
         let current_pass = table_manager.get_auth_password();
         if let Some(ref pass) = current_pass {
-            let token = extract_query_param(query, "token").unwrap_or_default();
+            let token = extract_auth_token(&req_str, query).unwrap_or_default();
             if token == *pass {
                 let resp = serde_json::json!({ "authenticated": true, "auth_required": true });
                 send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
@@ -96,11 +96,12 @@ async fn handle_http_client(
         return Ok(());
     }
 
-    // Check optional dynamic HTTP auth token in query param (?token=password)
+    // Check optional dynamic HTTP auth token in query param or headers (?token=password, ?auth_token=password, or Authorization header)
     let current_pass = table_manager.get_auth_password();
     if let Some(ref pass) = current_pass {
-        let token = extract_query_param(query, "token").unwrap_or_default();
-        if path.starts_with("/api/") && token != *pass {
+        let token = extract_auth_token(&req_str, query).unwrap_or_default();
+        let is_authed = token == *pass || (path == "/api/config/update" && extract_query_param(query, "auth_password").as_deref() == Some(pass));
+        if path.starts_with("/api/") && !is_authed {
             let resp = serde_json::json!({ "error": "Unauthorized. Provide ?token=password" });
             send_response(&mut stream, "401 Unauthorized", "application/json", &resp.to_string()).await?;
             return Ok(());
@@ -883,9 +884,36 @@ fn extract_query_param(query: &str, key: &str) -> Option<String> {
     None
 }
 
+fn extract_auth_token(req_str: &str, query: &str) -> Option<String> {
+    if let Some(tok) = extract_query_param(query, "token") {
+        if !tok.is_empty() {
+            return Some(tok);
+        }
+    }
+    if let Some(tok) = extract_query_param(query, "auth_token") {
+        if !tok.is_empty() {
+            return Some(tok);
+        }
+    }
+    for line in req_str.lines() {
+        if line.to_ascii_lowercase().starts_with("authorization:") {
+            let val = line["authorization:".len()..].trim();
+            if val.to_ascii_lowercase().starts_with("bearer ") {
+                let token = val["bearer ".len()..].trim();
+                if !token.is_empty() {
+                    return Some(token.to_string());
+                }
+            } else if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
 async fn send_response(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) -> Result<(), Box<dyn std::error::Error>> {
     let header = format!(
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nExpires: 0\r\nConnection: close\r\n\r\n",
         status, content_type, body.len()
     );
     stream.write_all(header.as_bytes()).await?;
@@ -2305,14 +2333,23 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       const comp = document.getElementById('cfg-compaction').value;
       const asyncFsync = document.getElementById('cfg-async-fsync').checked;
 
-      const q = `worker_threads=${encodeURIComponent(threads)}&memtable_size_mb=${encodeURIComponent(mem)}&block_cache_mb=${encodeURIComponent(cache)}&compaction_trigger=${encodeURIComponent(comp)}&commit_delay_us=${encodeURIComponent(delay)}&async_fsync=${asyncFsync}&auth_password=${encodeURIComponent(auth)}`;
+      // Pass token if we have one, or fallback to current auth input
+      const tokenParam = authToken ? `&token=${encodeURIComponent(authToken)}` : (auth ? `&token=${encodeURIComponent(auth)}` : '');
+      const q = `worker_threads=${encodeURIComponent(threads)}&memtable_size_mb=${encodeURIComponent(mem)}&block_cache_mb=${encodeURIComponent(cache)}&compaction_trigger=${encodeURIComponent(comp)}&commit_delay_us=${encodeURIComponent(delay)}&async_fsync=${asyncFsync}&auth_password=${encodeURIComponent(auth)}${tokenParam}`;
       
       const box = document.getElementById('cfg-status');
       box.style.display = 'block';
+      box.style.background = '#f3f4f6';
+      box.style.color = '#374151';
+      box.style.border = '1px solid #d1d5db';
       box.innerText = 'Applying configuration...';
       try {
         const res = await authFetch('/api/config/update?' + q);
         const data = await res.json();
+
+        if (!res.ok || data.error) {
+          throw new Error(data.error || 'Server error (' + res.status + ')');
+        }
         
         // Auto synchronize session token if auth password was set or cleared
         if (auth.length > 0) {
@@ -2325,10 +2362,16 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
           updateAuthHeader(false);
         }
 
-        box.innerText = 'Configuration saved and applied live:\n' + JSON.stringify(data, null, 2);
+        box.style.background = '#ecfdf5';
+        box.style.color = '#065f46';
+        box.style.border = '1px solid #a7f3d0';
+        box.innerText = '✅ Configuration saved and applied live:\n' + JSON.stringify(data, null, 2);
         updateTableStats();
       } catch (e) {
-        box.innerText = 'Error saving configuration: ' + e;
+        box.style.background = '#fef2f2';
+        box.style.color = '#dc2626';
+        box.style.border = '1px solid #fecaca';
+        box.innerText = '❌ Failed to save configuration: ' + e.message;
       }
     }
 
