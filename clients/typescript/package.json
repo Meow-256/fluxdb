@@ -1,7 +1,7 @@
 {
-  "name": "meowdb",
+  "name": "veloxdb",
   "version": "0.1.0",
-  "description": "Official TypeScript & Node.js client for MeowDB",
+  "description": "Official TypeScript & Node.js client for VeloxDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

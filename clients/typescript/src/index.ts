@@ -156,3 +156,7 @@ export class MeowDB {
     }
   }
 }
+
+export const VeloxDB = MeowDB;
+export type VeloxDBOptions = MeowDBOptions;
+export default VeloxDB;
