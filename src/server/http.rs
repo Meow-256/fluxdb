@@ -680,6 +680,33 @@ async fn handle_http_client(
             let resp = serde_json::json!({ "error": "Missing field parameter" });
             send_response(&mut stream, "400 Bad Request", "application/json", &resp.to_string()).await?;
         }
+    } else if path == "/api/keys" {
+        let table_name = extract_query_param(query, "table").unwrap_or_default();
+        let limit: usize = extract_query_param(query, "limit")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5000)
+            .min(50000);
+
+        if let Some(table) = table_manager.get_table(&table_name) {
+            match table.engine.scan(None, None, limit) {
+                Ok(entries) => {
+                    let keys: Vec<String> = entries.into_iter().map(|(k, _)| k.to_string()).collect();
+                    let resp = serde_json::json!({
+                        "table": table_name,
+                        "count": keys.len(),
+                        "keys": keys
+                    });
+                    send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
+                }
+                Err(e) => {
+                    let resp = serde_json::json!({ "error": e.to_string() });
+                    send_response(&mut stream, "500 Internal Error", "application/json", &resp.to_string()).await?;
+                }
+            }
+        } else {
+            let resp = serde_json::json!({ "error": "Table not found" });
+            send_response(&mut stream, "404 Not Found", "application/json", &resp.to_string()).await?;
+        }
     } else if path == "/api/scan" {
         let table_name = extract_query_param(query, "table").unwrap_or_default();
         let start_str = extract_query_param(query, "start");
@@ -1025,6 +1052,98 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       border-radius: 8px;
       color: #6b7280;
     }
+
+    /* Show Tab 2-Pane Explorer */
+    .show-container {
+      display: flex;
+      gap: 16px;
+      height: 560px;
+    }
+    .keys-pane {
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: hidden;
+    }
+    .keys-header {
+      padding: 10px 12px;
+      background: #f9fafb;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .keys-header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .keys-list {
+      flex: 1;
+      overflow-y: auto;
+      list-style: none;
+      padding: 6px;
+      margin: 0;
+    }
+    .key-item {
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 13px;
+      color: #374151;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 2px;
+      border: 1px solid transparent;
+      word-break: break-all;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .key-item:hover {
+      background: #f3f4f6;
+    }
+    .key-item.active {
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-weight: 600;
+      border-color: #93c5fd;
+    }
+    .data-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .data-header {
+      padding: 10px 14px;
+      background: #f9fafb;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .data-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 0;
+    }
+    .data-body pre {
+      flex: 1;
+      margin: 0;
+      border-radius: 0;
+      max-height: none;
+      height: 100%;
+    }
   </style>
 </head>
 <body>
@@ -1111,7 +1230,8 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
 
         <!-- Tabs -->
         <div class="tabs">
-          <button class="tab-btn active" onclick="showTab('lookup')">Lookup & JSON_SET</button>
+          <button class="tab-btn active" onclick="showTab('show')">Show</button>
+          <button class="tab-btn" onclick="showTab('lookup')">Lookup & JSON_SET</button>
           <button class="tab-btn" onclick="showTab('scan')">Range Scan (SCAN)</button>
           <button class="tab-btn" onclick="showTab('filter')">Filter & DelWhere</button>
           <button class="tab-btn" onclick="showTab('stats')">Stats & Aggregation</button>
@@ -1120,8 +1240,43 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
           <button class="tab-btn" onclick="showTab('ttl')">TTL / Expiration</button>
         </div>
 
+        <!-- Tab 0: Show (All Keys Explorer) -->
+        <div id="tab-show" class="panel active">
+          <div class="show-container">
+            <!-- Left: Keys Pane -->
+            <div class="keys-pane">
+              <div class="keys-header">
+                <div class="keys-header-top">
+                  <span style="font-weight:700; font-size:13px; color:#111827;">🔑 Keys (<span id="show-keys-count">0</span>)</span>
+                  <button class="btn" style="padding:4px 8px; font-size:11px;" onclick="loadShowKeys()">🔄 Refresh</button>
+                </div>
+                <input type="text" id="show-key-filter" placeholder="Filter keys..." oninput="filterShowKeysList()" style="width:100%; padding:5px 8px; font-size:12px;">
+              </div>
+              <ul class="keys-list" id="show-keys-list">
+                <li style="padding:12px; color:#9ca3af; text-align:center; font-size:12px;">Loading keys...</li>
+              </ul>
+            </div>
+
+            <!-- Right: Record Data Viewer Pane -->
+            <div class="data-pane">
+              <div class="data-header">
+                <div style="display:flex; align-items:center; gap:8px; min-width:0;">
+                  <span style="font-weight:700; font-size:13px; color:#111827; white-space:nowrap;">📄 Record Detail:</span>
+                  <span id="show-selected-key" style="font-family:monospace; font-weight:600; color:#2563eb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">(No key selected)</span>
+                </div>
+                <div style="display:flex; gap:6px; flex-shrink:0;">
+                  <button class="btn" style="padding:4px 10px; font-size:12px; background:#4b5563;" onclick="copyShowData()">📋 Copy JSON</button>
+                </div>
+              </div>
+              <div class="data-body">
+                <pre id="show-data-view">// Select a key on the left to view its stored JSON data</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Tab 1: Lookup & JSON_SET -->
-        <div id="tab-lookup" class="panel active">
+        <div id="tab-lookup" class="panel">
           <div class="form-group">
             <input type="text" id="input-uuid" placeholder="Enter UUID or string key (e.g. 909fb8ea-1b14-4ca9-b15b-277ec2559be0 or steve)">
             <button class="btn" onclick="searchUuid()">Get Record (GET)</button>
@@ -1359,6 +1514,8 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
 
   <script>
     let currentTable = null;
+    let showAllKeys = [];
+    let selectedShowKey = null;
 
     async function loadTables() {
       try {
@@ -1380,6 +1537,7 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
         document.getElementById('empty-state').style.display = 'none';
         document.getElementById('table-content').style.display = 'block';
 
+        const prevTable = currentTable;
         if (!currentTable || !tables.includes(currentTable)) {
           currentTable = tables[0];
         }
@@ -1393,17 +1551,93 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
           listEl.appendChild(li);
         });
         document.getElementById('total-disk-size').innerText = data.total_disk_size_human || '0 B';
+
+        if (!prevTable && currentTable) {
+          loadShowKeys();
+        }
       } catch (e) {
         console.error(e);
       }
     }
 
-    function switchTable(name) {
-      currentTable = name;
-      document.getElementById('current-table-title').innerText = name;
-      document.getElementById('lookup-result').innerText = '// Record JSON payload will be displayed here';
-      loadTables();
-      updateTableStats();
+    async function loadShowKeys() {
+      if (!currentTable) return;
+      const listEl = document.getElementById('show-keys-list');
+      const countEl = document.getElementById('show-keys-count');
+      try {
+        const res = await fetch('/api/keys?table=' + encodeURIComponent(currentTable) + '&limit=50000');
+        const data = await res.json();
+        showAllKeys = data.keys || [];
+        countEl.innerText = showAllKeys.length.toLocaleString();
+        renderShowKeysList(showAllKeys);
+        if (showAllKeys.length > 0) {
+          if (!selectedShowKey || !showAllKeys.includes(selectedShowKey)) {
+            selectShowKey(showAllKeys[0]);
+          }
+        } else {
+          selectedShowKey = null;
+          document.getElementById('show-selected-key').innerText = '(No keys in table)';
+          document.getElementById('show-data-view').innerText = '// Table has no records yet';
+        }
+      } catch (e) {
+        listEl.innerHTML = '<li style="padding:12px; color:#dc2626; text-align:center; font-size:12px;">Error: ' + e + '</li>';
+      }
+    }
+
+    function renderShowKeysList(keys) {
+      const listEl = document.getElementById('show-keys-list');
+      listEl.innerHTML = '';
+      if (keys.length === 0) {
+        listEl.innerHTML = '<li style="padding:12px; color:#9ca3af; text-align:center; font-size:12px;">No keys found</li>';
+        return;
+      }
+      keys.forEach(k => {
+        const li = document.createElement('li');
+        li.className = 'key-item' + (k === selectedShowKey ? ' active' : '');
+        li.innerText = k;
+        li.onclick = () => selectShowKey(k);
+        listEl.appendChild(li);
+      });
+    }
+
+    function filterShowKeysList() {
+      const filter = (document.getElementById('show-key-filter').value || '').trim().toLowerCase();
+      const filtered = showAllKeys.filter(k => k.toLowerCase().includes(filter));
+      renderShowKeysList(filtered);
+    }
+
+    async function selectShowKey(key) {
+      selectedShowKey = key;
+      document.querySelectorAll('.key-item').forEach(el => {
+        if (el.innerText === key) {
+          el.classList.add('active');
+        } else {
+          el.classList.remove('active');
+        }
+      });
+      document.getElementById('show-selected-key').innerText = key;
+      const box = document.getElementById('show-data-view');
+      box.innerText = 'Loading record data...';
+      try {
+        const res = await fetch('/api/get?table=' + encodeURIComponent(currentTable) + '&uuid=' + encodeURIComponent(key));
+        const data = await res.json();
+        if (data.found && data.data !== undefined) {
+          box.innerText = JSON.stringify(data.data, null, 2);
+        } else {
+          box.innerText = JSON.stringify(data, null, 2);
+        }
+      } catch (e) {
+        box.innerText = 'Error loading data: ' + e;
+      }
+    }
+
+    function copyShowData() {
+      const text = document.getElementById('show-data-view').innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        alert('Copied record JSON data to clipboard!');
+      }).catch(err => {
+        console.error('Failed to copy', err);
+      });
     }
 
     async function promptCreateTable() {
@@ -1793,10 +2027,12 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       btn.style.background = '#f5f3ff';
       btn.style.color = '#6d28d9';
       currentTable = name;
+      selectedShowKey = null;
       document.getElementById('current-table-title').innerText = name;
       document.getElementById('lookup-result').innerText = '// Record JSON payload will be displayed here';
       loadTables();
       updateTableStats();
+      loadShowKeys();
     }
 
     function showTab(name) {
@@ -1804,12 +2040,14 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       event.target.classList.add('active');
       document.getElementById('tab-' + name).classList.add('active');
+      if (name === 'show') loadShowKeys();
       if (name === 'rank') loadRankings();
     }
 
     loadTables().then(() => {
       updateTableStats();
       loadServerConfig();
+      loadShowKeys();
     });
     setInterval(() => {
       if (document.getElementById('table-view-section').style.display !== 'none') {
