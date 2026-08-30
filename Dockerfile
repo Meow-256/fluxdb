@@ -1,20 +1,24 @@
 # ==========================================
 # FluxDB Multi-stage Production Dockerfile
 # ==========================================
-FROM rust:1.80-bullseye AS builder
+FROM rust:latest AS builder
 
 WORKDIR /usr/src/fluxdb
 
-# Cache dependencies
-COPY Cargo.toml ./
+# Copy manifest and lockfile to lock exact dependency versions
+COPY Cargo.toml Cargo.lock ./
+
+# Build dependencies cache
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release || true
 
-# Build complete binary suite
+# Copy full source and build complete binary suite
 COPY . .
 RUN cargo build --release
 
-# Runtime image
-FROM debian:bullseye-slim
+# ==========================================
+# Runtime Image
+# ==========================================
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
@@ -34,4 +38,3 @@ EXPOSE 7379 7380
 
 ENTRYPOINT ["fluxdb-server"]
 CMD ["--config", "/app/fluxdb.toml"]
-
