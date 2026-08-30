@@ -4,8 +4,16 @@
   "description": "Official TypeScript & Node.js client for MeowDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
   },
   "keywords": ["database", "nosql", "redis", "lsm-tree", "meowdb"],
   "author": "MeowDB Team",
