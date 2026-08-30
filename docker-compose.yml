@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  meowdb:
+    build: .
+    container_name: meowdb
+    ports:
+      - "7379:7379"
+      - "7380:7380"
+    volumes:
+      - meowdb_data:/data
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+
+volumes:
+  meowdb_data:
+    driver: local
