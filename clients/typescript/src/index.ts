@@ -158,5 +158,7 @@ export class MeowDB {
 }
 
 export const VeloxDB = MeowDB;
+export const FluxDB = MeowDB;
 export type VeloxDBOptions = MeowDBOptions;
-export default VeloxDB;
+export type FluxDBOptions = MeowDBOptions;
+export default FluxDB;

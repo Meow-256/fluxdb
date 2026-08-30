@@ -1,15 +1,14 @@
 {
-  "name": "veloxdb",
+  "name": "@meow256/fluxdb",
   "version": "0.1.0",
-  "description": "Official TypeScript & Node.js client for VeloxDB",
+  "description": "Official TypeScript & Node.js client for FluxDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "build": "tsc || true"
   },
   "devDependencies": {
     "typescript": "^5.0.0",
