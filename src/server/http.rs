@@ -690,11 +690,39 @@ async fn handle_http_client(
         if let Some(table) = table_manager.get_table(&table_name) {
             match table.engine.scan(None, None, limit) {
                 Ok(entries) => {
-                    let keys: Vec<String> = entries.into_iter().map(|(k, _)| k.to_string()).collect();
+                    let mut keys: Vec<String> = Vec::with_capacity(entries.len());
+                    let mut records: Vec<serde_json::Value> = Vec::with_capacity(entries.len());
+                    for (k, v) in entries {
+                        let uuid_str = k.to_string();
+                        keys.push(uuid_str.clone());
+                        let val_str = String::from_utf8_lossy(&v);
+                        let parsed = serde_json::from_str::<serde_json::Value>(&val_str)
+                            .unwrap_or(serde_json::Value::String(val_str.into_owned()));
+                        
+                        let mut label = uuid_str.clone();
+                        if let serde_json::Value::Object(ref map) = parsed {
+                            for candidate in &["key", "name", "username", "player_name", "user", "player", "id", "title", "label", "uuid"] {
+                                if let Some(serde_json::Value::String(s)) = map.get(*candidate) {
+                                    if !s.trim().is_empty() {
+                                        label = s.clone();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        records.push(serde_json::json!({
+                            "uuid": uuid_str,
+                            "label": label,
+                            "data": parsed
+                        }));
+                    }
+
                     let resp = serde_json::json!({
                         "table": table_name,
-                        "count": keys.len(),
-                        "keys": keys
+                        "count": records.len(),
+                        "keys": keys,
+                        "records": records
                     });
                     send_response(&mut stream, "200 OK", "application/json", &resp.to_string()).await?;
                 }
@@ -1091,14 +1119,11 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
     .key-item {
       padding: 8px 10px;
       border-radius: 6px;
-      font-family: monospace;
-      font-size: 13px;
-      color: #374151;
       cursor: pointer;
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 2px;
+      flex-direction: column;
+      gap: 2px;
+      margin-bottom: 3px;
       border: 1px solid transparent;
       word-break: break-all;
       transition: background 0.15s, border-color 0.15s;
@@ -1108,9 +1133,21 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
     }
     .key-item.active {
       background: #eff6ff;
-      color: #1d4ed8;
-      font-weight: 600;
       border-color: #93c5fd;
+    }
+    .key-item-label {
+      font-family: monospace;
+      font-size: 13px;
+      font-weight: 700;
+      color: #1f2937;
+    }
+    .key-item.active .key-item-label {
+      color: #1d4ed8;
+    }
+    .key-item-uuid {
+      font-family: monospace;
+      font-size: 11px;
+      color: #9ca3af;
     }
     .data-pane {
       flex: 1;
@@ -1514,8 +1551,13 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
 
   <script>
     let currentTable = null;
-    let showAllKeys = [];
+    let showAllRecords = [];
     let selectedShowKey = null;
+
+    function escapeHtml(str) {
+      if (typeof str !== 'string') str = String(str);
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
 
     async function loadTables() {
       try {
@@ -1567,12 +1609,15 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       try {
         const res = await fetch('/api/keys?table=' + encodeURIComponent(currentTable) + '&limit=50000');
         const data = await res.json();
-        showAllKeys = data.keys || [];
-        countEl.innerText = showAllKeys.length.toLocaleString();
-        renderShowKeysList(showAllKeys);
-        if (showAllKeys.length > 0) {
-          if (!selectedShowKey || !showAllKeys.includes(selectedShowKey)) {
-            selectShowKey(showAllKeys[0]);
+        showAllRecords = data.records || [];
+        countEl.innerText = showAllRecords.length.toLocaleString();
+        renderShowKeysList(showAllRecords);
+        if (showAllRecords.length > 0) {
+          const match = showAllRecords.find(r => r.uuid === selectedShowKey);
+          if (match) {
+            selectShowRecord(match);
+          } else {
+            selectShowRecord(showAllRecords[0]);
           }
         } else {
           selectedShowKey = null;
@@ -1584,50 +1629,60 @@ const WEB_UI_HTML: &str = r#"<!DOCTYPE html>
       }
     }
 
-    function renderShowKeysList(keys) {
+    function renderShowKeysList(records) {
       const listEl = document.getElementById('show-keys-list');
       listEl.innerHTML = '';
-      if (keys.length === 0) {
+      if (records.length === 0) {
         listEl.innerHTML = '<li style="padding:12px; color:#9ca3af; text-align:center; font-size:12px;">No keys found</li>';
         return;
       }
-      keys.forEach(k => {
+      records.forEach(r => {
         const li = document.createElement('li');
-        li.className = 'key-item' + (k === selectedShowKey ? ' active' : '');
-        li.innerText = k;
-        li.onclick = () => selectShowKey(k);
+        li.className = 'key-item' + (r.uuid === selectedShowKey ? ' active' : '');
+        const isDifferent = r.label !== r.uuid;
+        li.innerHTML = `
+          <div class="key-item-label">${escapeHtml(r.label)}</div>
+          ${isDifferent ? `<div class="key-item-uuid">${escapeHtml(r.uuid)}</div>` : ''}
+        `;
+        li.onclick = () => selectShowRecord(r);
         listEl.appendChild(li);
       });
     }
 
     function filterShowKeysList() {
       const filter = (document.getElementById('show-key-filter').value || '').trim().toLowerCase();
-      const filtered = showAllKeys.filter(k => k.toLowerCase().includes(filter));
+      const filtered = showAllRecords.filter(r => {
+        if ((r.label || '').toLowerCase().includes(filter)) return true;
+        if ((r.uuid || '').toLowerCase().includes(filter)) return true;
+        if (r.data && JSON.stringify(r.data).toLowerCase().includes(filter)) return true;
+        return false;
+      });
       renderShowKeysList(filtered);
     }
 
-    async function selectShowKey(key) {
-      selectedShowKey = key;
+    function selectShowRecord(rec) {
+      selectedShowKey = rec.uuid;
       document.querySelectorAll('.key-item').forEach(el => {
-        if (el.innerText === key) {
+        const uuidEl = el.querySelector('.key-item-uuid');
+        const labelEl = el.querySelector('.key-item-label');
+        const isSelected = (uuidEl && uuidEl.innerText === rec.uuid) || (labelEl && labelEl.innerText === rec.label && (!uuidEl || labelEl.innerText === rec.uuid));
+        if (isSelected) {
           el.classList.add('active');
         } else {
           el.classList.remove('active');
         }
       });
-      document.getElementById('show-selected-key').innerText = key;
+      
+      const keyHeader = rec.label !== rec.uuid 
+        ? `${escapeHtml(rec.label)} <span style="font-size:11px; color:#6b7280; font-weight:normal;">(${escapeHtml(rec.uuid)})</span>`
+        : escapeHtml(rec.uuid);
+      document.getElementById('show-selected-key').innerHTML = keyHeader;
+
       const box = document.getElementById('show-data-view');
-      box.innerText = 'Loading record data...';
-      try {
-        const res = await fetch('/api/get?table=' + encodeURIComponent(currentTable) + '&uuid=' + encodeURIComponent(key));
-        const data = await res.json();
-        if (data.found && data.data !== undefined) {
-          box.innerText = JSON.stringify(data.data, null, 2);
-        } else {
-          box.innerText = JSON.stringify(data, null, 2);
-        }
-      } catch (e) {
-        box.innerText = 'Error loading data: ' + e;
+      if (rec.data !== undefined) {
+        box.innerText = JSON.stringify(rec.data, null, 2);
+      } else {
+        box.innerText = '// No data';
       }
     }
 
