@@ -5,6 +5,35 @@ REPO="Meow-256/fluxdb"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/fluxdb"
 DATA_DIR="/var/lib/fluxdb/data"
+DOCKER_IMAGE="ghcr.io/meow-256/fluxdb:latest"
+
+MODE="auto" # auto, docker, native
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --docker)
+      MODE="docker"
+      shift
+      ;;
+    --native)
+      MODE="native"
+      shift
+      ;;
+    --help|-h)
+      echo "FluxDB Installer"
+      echo "Usage: curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash [options]"
+      echo ""
+      echo "Options:"
+      echo "  --docker    Force container installation using Docker"
+      echo "  --native    Force bare-metal / native systemd installation"
+      echo "  --help      Show this help message"
+      exit 0
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
 
 echo "============================================================"
 echo "⚡ Installing FluxDB (Ultra-High Performance LSM Database)"
@@ -17,7 +46,72 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Detect OS and Architecture
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$DATA_DIR"
+mkdir -p "$INSTALL_DIR"
+
+# Decide execution mode
+if [ "$MODE" = "auto" ]; then
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    MODE="docker"
+    echo "🐳 Docker detected on system. Using Docker container mode."
+  else
+    MODE="native"
+    echo "🖥️  Docker not detected. Using Native Bare-Metal mode."
+  fi
+fi
+
+# ==========================================
+# 1. DOCKER CONTAINER MODE
+# ==========================================
+if [ "$MODE" = "docker" ]; then
+  echo "🚀 Pulling and starting FluxDB container (${DOCKER_IMAGE})..."
+  
+  # Remove existing fluxdb container if running
+  if docker ps -a --format '{{.Names}}' | grep -Eq "^fluxdb\$"; then
+    echo "🔄 Stopping and replacing existing 'fluxdb' container..."
+    docker rm -f fluxdb >/dev/null 2>&1 || true
+  fi
+
+  docker run -d \
+    --name fluxdb \
+    --restart always \
+    -p 7379:7379 \
+    -p 7380:7380 \
+    -v "${DATA_DIR}:/app/data" \
+    "$DOCKER_IMAGE"
+
+  # Create host CLI wrapper script: 'fluxdb' -> 'docker exec -it fluxdb fluxdb-cli'
+  cat << 'EOF' > "${INSTALL_DIR}/fluxdb"
+#!/usr/bin/env bash
+if [ -t 0 ]; then
+  exec docker exec -it fluxdb fluxdb-cli "$@"
+else
+  exec docker exec -i fluxdb fluxdb-cli "$@"
+fi
+EOF
+  chmod 755 "${INSTALL_DIR}/fluxdb"
+  ln -sf "${INSTALL_DIR}/fluxdb" "${INSTALL_DIR}/fluxdb-cli"
+
+  echo ""
+  echo "============================================================"
+  echo "🎉 FluxDB started successfully in Docker!"
+  echo "============================================================"
+  echo "  • Container Name:     fluxdb"
+  echo "  • Interactive CLI:    fluxdb (or fluxdb-cli)"
+  echo "  • Data Storage:       ${DATA_DIR}"
+  echo "  • TCP Port (RESP):    7379"
+  echo "  • Web Management UI:  http://localhost:7380"
+  echo ""
+  echo "To connect to the database now, simply run:"
+  echo "  fluxdb"
+  echo "============================================================"
+  exit 0
+fi
+
+# ==========================================
+# 2. NATIVE BARE-METAL MODE
+# ==========================================
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 
@@ -29,7 +123,6 @@ case "$ARCH" in
     ARCH="aarch64"
     ;;
   *)
-    echo "⚠️  Unsupported architecture: $ARCH. Attempting build from source..."
     ARCH="unknown"
     ;;
 esac
@@ -65,9 +158,9 @@ fi
 
 # Fallback to source compilation if pre-built release binary is not available yet
 if [ $INSTALLED_FROM_RELEASE -eq 0 ]; then
-  echo "ℹ️  Downloading source and compiling with Cargo (release mode)..."
+  echo "ℹ️  Compiling from source with Cargo (release mode)..."
   if ! command -v cargo >/dev/null 2>&1; then
-    echo "🔧 Rust/Cargo not found. Installing minimal Rust toolchain..."
+    echo "🔧 Installing minimal Rust toolchain..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
     export PATH="$HOME/.cargo/bin:$PATH"
   fi
@@ -82,8 +175,6 @@ fi
 
 # Install Binaries to /usr/local/bin
 echo "🚀 Installing binaries to ${INSTALL_DIR}..."
-mkdir -p "$INSTALL_DIR"
-
 if [ -d "${TEMP_DIR}/bin" ]; then
   cp "${TEMP_DIR}/bin/"* "$INSTALL_DIR/"
 else
@@ -91,12 +182,7 @@ else
 fi
 
 chmod 755 "${INSTALL_DIR}/fluxdb-"*
-# Create alias link: 'fluxdb' -> 'fluxdb-cli'
 ln -sf "${INSTALL_DIR}/fluxdb-cli" "${INSTALL_DIR}/fluxdb"
-
-# Create Config and Data directories
-mkdir -p "$CONFIG_DIR"
-mkdir -p "$DATA_DIR"
 
 if [ ! -f "${CONFIG_DIR}/fluxdb.toml" ]; then
   if [ -f "${TEMP_DIR}/fluxdb.toml" ]; then
@@ -149,10 +235,10 @@ fi
 
 echo ""
 echo "============================================================"
-echo "🎉 FluxDB installed successfully!"
+echo "🎉 FluxDB installed successfully (Native Mode)!"
 echo "============================================================"
 echo "  • Server Binary:      ${INSTALL_DIR}/fluxdb-server"
-echo "  • Interactive CLI:    ${INSTALL_DIR}/fluxdb (or fluxdb-cli)"
+echo "  • Interactive CLI:    ${INSTALL_DIR}/fluxdb"
 echo "  • Configuration:      ${CONFIG_DIR}/fluxdb.toml"
 echo "  • Data Storage:       ${DATA_DIR}"
 echo "  • TCP Port (RESP):    7379"

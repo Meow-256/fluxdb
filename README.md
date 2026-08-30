@@ -67,21 +67,28 @@ FluxDB is optimized for **128-bit integer/UUID keys** while seamlessly supportin
 
 ## 🚀 Installation & Quick Start
 
-### 1. One-Liner Install (Linux & macOS)
+### 1. One-Liner Quick Install (Auto / Docker / Native)
 
-Install FluxDB server, CLI tools, configuration, and automatic background systemd service with a single command:
+Run the universal installer on Linux or macOS. It **automatically detects Docker** (if installed, it runs as an isolated container; otherwise, it sets up a native bare-metal systemd service):
 
 ```bash
+# Automatic Detection (Docker if available, otherwise Native bare-metal):
 curl -fsSL https://raw.githubusercontent.com/Meow-256/fluxdb/main/install.sh | sudo bash
+
+# Or explicitly force Docker container mode:
+curl -fsSL https://raw.githubusercontent.com/Meow-256/fluxdb/main/install.sh | sudo bash -s -- --docker
+
+# Or explicitly force Native Bare-Metal systemd mode:
+curl -fsSL https://raw.githubusercontent.com/Meow-256/fluxdb/main/install.sh | sudo bash -s -- --native
 ```
 
-Once installed, FluxDB runs in the background as a system service. You can immediately launch the interactive CLI by typing:
+Once installed (whether via Docker or Native), you can immediately open the interactive database CLI by typing:
 
 ```bash
 fluxdb
 ```
 
-Service management commands:
+Service management commands (Native systemd):
 ```bash
 sudo systemctl status fluxdb     # Check server status
 sudo systemctl restart fluxdb    # Restart server
