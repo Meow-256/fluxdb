@@ -50,6 +50,12 @@ mkdir -p "$CONFIG_DIR"
 mkdir -p "$DATA_DIR"
 mkdir -p "$INSTALL_DIR"
 
+TEMP_DIR=$(mktemp -d)
+cleanup() {
+  rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
 # Decide execution mode
 if [ "$MODE" = "auto" ]; then
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -65,21 +71,32 @@ fi
 # 1. DOCKER CONTAINER MODE
 # ==========================================
 if [ "$MODE" = "docker" ]; then
-  echo "🚀 Pulling and starting FluxDB container (${DOCKER_IMAGE})..."
-  
+  RUN_IMAGE="$DOCKER_IMAGE"
+  echo "🔍 Checking remote Docker image ($DOCKER_IMAGE)..."
+
+  # Attempt pulling remote image
+  if ! docker pull "$DOCKER_IMAGE" >/dev/null 2>&1; then
+    echo "ℹ️  Remote Docker image not found or not yet published."
+    echo "🔨 Building FluxDB Docker container locally from source..."
+    git clone --depth 1 "https://github.com/${REPO}.git" "${TEMP_DIR}/docker_source"
+    docker build -t fluxdb:local "${TEMP_DIR}/docker_source"
+    RUN_IMAGE="fluxdb:local"
+  fi
+
   # Remove existing fluxdb container if running
   if docker ps -a --format '{{.Names}}' | grep -Eq "^fluxdb\$"; then
     echo "🔄 Stopping and replacing existing 'fluxdb' container..."
     docker rm -f fluxdb >/dev/null 2>&1 || true
   fi
 
+  echo "🚀 Launching FluxDB container (${RUN_IMAGE})..."
   docker run -d \
     --name fluxdb \
     --restart always \
     -p 7379:7379 \
     -p 7380:7380 \
     -v "${DATA_DIR}:/app/data" \
-    "$DOCKER_IMAGE"
+    "$RUN_IMAGE"
 
   # Create host CLI wrapper script: 'fluxdb' -> 'docker exec -it fluxdb fluxdb-cli'
   cat << 'EOF' > "${INSTALL_DIR}/fluxdb"
@@ -126,12 +143,6 @@ case "$ARCH" in
     ARCH="unknown"
     ;;
 esac
-
-TEMP_DIR=$(mktemp -d)
-cleanup() {
-  rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
 
 INSTALLED_FROM_RELEASE=0
 
