@@ -34,11 +34,11 @@ struct Args {
     max_threads: Option<usize>,
 
     /// LRU Block Cache capacity in Megabytes (0 = disabled)
-    #[arg(long, default_value = "256")]
+    #[arg(long, default_value = "64")]
     block_cache_mb: usize,
 
     /// RAM limit for MemTable before SSTable flush (in MB)
-    #[arg(long, default_value = "256")]
+    #[arg(long, default_value = "64")]
     memtable_size_mb: usize,
 
     /// Trigger compaction after N SSTables

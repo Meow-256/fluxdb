@@ -35,16 +35,18 @@ impl BloomFilter {
     #[inline(always)]
     fn get_hash_pair(key: PlayerId) -> (u64, u64) {
         let val = key.0;
-        let mut h1 = (val >> 64) as u64;
-        let mut h2 = val as u64;
+        let mut h1 = ((val >> 64) as u64) ^ 0x517cc1b727220a95;
+        let mut h2 = (val as u64) ^ 0x9e3779b97f4a7c15;
 
-        // 64-bit Murmur3 finalizer mix
+        // 64-bit cross-mix
+        h1 = h1.wrapping_add(h2);
         h1 ^= h1 >> 33;
         h1 = h1.wrapping_mul(0xff51afd7ed558ccd);
         h1 ^= h1 >> 33;
         h1 = h1.wrapping_mul(0xc4ceb9fe1a85ec53);
         h1 ^= h1 >> 33;
 
+        h2 = h2.wrapping_add(h1);
         h2 ^= h2 >> 33;
         h2 = h2.wrapping_mul(0xff51afd7ed558ccd);
         h2 ^= h2 >> 33;

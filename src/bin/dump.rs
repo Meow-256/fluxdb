@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     println!("Connecting to FluxDB server at {}...", args.server);
-    let mut stream = TcpStream::connect(&args.server).await?;
+    let stream = TcpStream::connect(&args.server).await?;
     stream.set_nodelay(true)?;
 
     let (reader, mut writer) = stream.into_split();

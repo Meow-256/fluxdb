@@ -27,7 +27,7 @@ impl Default for DynamicServerConfig {
         let default_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         Self {
             worker_threads: default_threads,
-            memtable_size_bytes: 256 * 1024 * 1024,
+            memtable_size_bytes: 64 * 1024 * 1024,
             block_cache_mb: 0, // 0 = OFF by default
             compaction_trigger: 4,
             commit_delay_us: 1000,

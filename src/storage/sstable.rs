@@ -471,6 +471,167 @@ impl SsTable {
 
         Ok(entries)
     }
+
+    pub fn scan_iter(self: &Arc<Self>, start_key: Option<PlayerId>, end_key: Option<PlayerId>) -> SsTableIterator {
+        SsTableIterator::new(self.clone(), start_key, end_key)
+    }
+
+    pub fn iter(self: &Arc<Self>) -> SsTableIterator {
+        SsTableIterator::new(self.clone(), None, None)
+    }
+}
+
+/// Streaming iterator over an SSTable yielding entries block by block
+pub struct SsTableIterator {
+    sstable: Arc<SsTable>,
+    start_key: Option<PlayerId>,
+    end_key: Option<PlayerId>,
+    current_block_idx: usize,
+    current_block_bytes: Option<Bytes>,
+    current_offset: usize,
+    done: bool,
+}
+
+impl SsTableIterator {
+    pub fn new(
+        sstable: Arc<SsTable>,
+        start_key: Option<PlayerId>,
+        end_key: Option<PlayerId>,
+    ) -> Self {
+        if let Some(start) = start_key {
+            if start > sstable.max_key {
+                return Self {
+                    sstable,
+                    start_key,
+                    end_key,
+                    current_block_idx: 0,
+                    current_block_bytes: None,
+                    current_offset: 0,
+                    done: true,
+                };
+            }
+        }
+        if let Some(end) = end_key {
+            if end < sstable.min_key {
+                return Self {
+                    sstable,
+                    start_key,
+                    end_key,
+                    current_block_idx: 0,
+                    current_block_bytes: None,
+                    current_offset: 0,
+                    done: true,
+                };
+            }
+        }
+
+        let start_block_idx = match start_key {
+            Some(start) => match sstable.block_index.binary_search_by(|b| b.first_key.cmp(&start)) {
+                Ok(idx) => idx,
+                Err(0) => 0,
+                Err(idx) => idx - 1,
+            },
+            None => 0,
+        };
+
+        Self {
+            sstable,
+            start_key,
+            end_key,
+            current_block_idx: start_block_idx,
+            current_block_bytes: None,
+            current_offset: 0,
+            done: false,
+        }
+    }
+}
+
+impl Iterator for SsTableIterator {
+    type Item = (PlayerId, ValueEntry);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        loop {
+            if self.current_block_bytes.is_none() {
+                if self.current_block_idx >= self.sstable.block_index.len() {
+                    self.done = true;
+                    return None;
+                }
+
+                let block_meta = &self.sstable.block_index[self.current_block_idx];
+                if let Some(end) = self.end_key {
+                    if block_meta.first_key > end {
+                        self.done = true;
+                        return None;
+                    }
+                }
+
+                match self.sstable.read_block_bytes(block_meta) {
+                    Ok(bytes) => {
+                        self.current_block_bytes = Some(bytes);
+                        self.current_offset = 0;
+                    }
+                    Err(_) => {
+                        self.done = true;
+                        return None;
+                    }
+                }
+            }
+
+            let block_bytes = self.current_block_bytes.as_ref().unwrap();
+            let total_len = block_bytes.len();
+
+            if self.current_offset + 37 <= total_len {
+                let offset = self.current_offset;
+                let mut k_bytes = [0u8; 16];
+                k_bytes.copy_from_slice(&block_bytes[offset..offset + 16]);
+                let entry_key = PlayerId::from_bytes(k_bytes);
+                let seq_num = u64::from_be_bytes(block_bytes[offset + 16..offset + 24].try_into().unwrap());
+                let timestamp = u64::from_be_bytes(block_bytes[offset + 24..offset + 32].try_into().unwrap());
+                let op_type_byte = block_bytes[offset + 32];
+                let val_len = u32::from_be_bytes(block_bytes[offset + 33..offset + 37].try_into().unwrap()) as usize;
+
+                let entry_end = offset + 37 + val_len;
+                if entry_end > total_len {
+                    self.current_block_bytes = None;
+                    self.current_block_idx += 1;
+                    continue;
+                }
+
+                self.current_offset = entry_end;
+
+                if let Some(start) = self.start_key {
+                    if entry_key < start {
+                        continue;
+                    }
+                }
+
+                if let Some(end) = self.end_key {
+                    if entry_key > end {
+                        self.done = true;
+                        return None;
+                    }
+                }
+
+                let entry = match op_type_byte {
+                    1 => ValueEntry::put(block_bytes.slice(offset + 37..entry_end), seq_num, timestamp),
+                    2 => ValueEntry::delete(seq_num, timestamp),
+                    _ => {
+                        self.done = true;
+                        return None;
+                    }
+                };
+
+                return Some((entry_key, entry));
+            } else {
+                self.current_block_bytes = None;
+                self.current_block_idx += 1;
+            }
+        }
+    }
 }
 
 /// Builder for constructing SSTable files with configurable block compression (NONE, LZ4, ZSTD)
@@ -559,15 +720,24 @@ impl SsTableBuilder {
         Ok(())
     }
 
-    /// Build SSTable from sorted entries iterator
+    /// Build SSTable from streaming sorted entries iterator without buffering everything into memory
     pub fn build<I>(self, entries: I) -> Result<Option<SsTable>>
     where
         I: IntoIterator<Item = (PlayerId, ValueEntry)>,
     {
-        let entries: Vec<(PlayerId, ValueEntry)> = entries.into_iter().collect();
-        if entries.is_empty() {
-            return Ok(None);
-        }
+        self.build_with_hint(entries, 1024)
+    }
+
+    /// Build SSTable from streaming sorted entries iterator with estimated entry count for Bloom Filter sizing
+    pub fn build_with_hint<I>(self, entries: I, estimated_entries: usize) -> Result<Option<SsTable>>
+    where
+        I: IntoIterator<Item = (PlayerId, ValueEntry)>,
+    {
+        let mut iter = entries.into_iter();
+        let first_item = match iter.next() {
+            Some(item) => item,
+            None => return Ok(None),
+        };
 
         let file = OpenOptions::new()
             .create(true)
@@ -576,22 +746,29 @@ impl SsTableBuilder {
             .open(&self.path)?;
         let mut writer = BufWriter::new(file);
 
-        let mut bloom_filter = BloomFilter::new(entries.len(), 0.01);
+        let mut bloom_filter = BloomFilter::new(estimated_entries.max(1024), 0.01);
         let mut block_index: Vec<BlockMeta> = Vec::new();
 
-        let min_key = entries[0].0;
-        let max_key = entries.last().unwrap().0;
-        let entry_count = entries.len() as u64;
+        let min_key = first_item.0;
+        let mut max_key = first_item.0;
+        let mut entry_count = 0u64;
 
         let mut current_block = BytesMut::with_capacity(self.target_block_size);
         let mut block_first_key: Option<PlayerId> = None;
         let mut current_offset = 0u64;
 
-        for (key, entry) in &entries {
-            bloom_filter.insert(*key);
-
+        let write_entry = |key: PlayerId,
+                               entry: ValueEntry,
+                               writer: &mut BufWriter<File>,
+                               bloom_filter: &mut BloomFilter,
+                               current_block: &mut BytesMut,
+                               block_first_key: &mut Option<PlayerId>,
+                               block_index: &mut Vec<BlockMeta>,
+                               current_offset: &mut u64|
+         -> Result<()> {
+            bloom_filter.insert(key);
             if block_first_key.is_none() {
-                block_first_key = Some(*key);
+                *block_first_key = Some(key);
             }
 
             // Write entry to block
@@ -608,15 +785,45 @@ impl SsTableBuilder {
             // Flush block if threshold exceeded
             if current_block.len() >= self.target_block_size {
                 self.write_block(
-                    &mut writer,
-                    &current_block,
+                    writer,
+                    current_block,
                     block_first_key.unwrap(),
-                    &mut block_index,
-                    &mut current_offset,
+                    block_index,
+                    current_offset,
                 )?;
                 current_block.clear();
-                block_first_key = None;
+                *block_first_key = None;
             }
+            Ok(())
+        };
+
+        // Process first entry
+        entry_count += 1;
+        write_entry(
+            first_item.0,
+            first_item.1,
+            &mut writer,
+            &mut bloom_filter,
+            &mut current_block,
+            &mut block_first_key,
+            &mut block_index,
+            &mut current_offset,
+        )?;
+
+        // Process remaining entries
+        for (key, entry) in iter {
+            max_key = key;
+            entry_count += 1;
+            write_entry(
+                key,
+                entry,
+                &mut writer,
+                &mut bloom_filter,
+                &mut current_block,
+                &mut block_first_key,
+                &mut block_index,
+                &mut current_offset,
+            )?;
         }
 
         // Flush remaining block
@@ -650,7 +857,7 @@ impl SsTableBuilder {
         let bloom_len = bloom_bytes.len() as u64;
         writer.write_all(&bloom_bytes)?;
 
-        // Write Footer (88 bytes): [Index Offset: 8B] [Index Len: 8B] [Bloom Offset: 8B] [Bloom Len: 8B] [Min Key: 16B] [Max Key: 16B] [Entry Count: 8B] [Level: 4B] [Reserved: 4B] [Magic: 8B]
+        // Write Footer
         let mut footer = BytesMut::with_capacity(88);
         footer.put_u64(index_offset);
         footer.put_u64(index_len);
@@ -660,7 +867,7 @@ impl SsTableBuilder {
         footer.put_slice(&max_key.to_bytes());
         footer.put_u64(entry_count);
         footer.put_u32(self.level);
-        footer.put_u32(0); // reserved
+        footer.put_u32(0);
         footer.put_u64(SSTABLE_MAGIC_V3);
         writer.write_all(&footer)?;
 

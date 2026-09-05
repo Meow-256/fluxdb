@@ -269,6 +269,9 @@ impl QueryFilter {
     /// Parses string into strongly typed serde_json::Value (JSON, Number, Boolean, String)
     pub fn parse_json_value(raw: &str) -> Value {
         let trimmed = raw.trim();
+        if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2 {
+            return Value::String(trimmed[1..trimmed.len() - 1].to_string());
+        }
         if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
             v
         } else if let Ok(n) = trimmed.parse::<i64>() {

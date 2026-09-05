@@ -13,7 +13,7 @@ use crate::core::types::{DbError, OpType, PlayerId, Result, ValueEntry};
 use crate::index::QueryFilter;
 use crate::storage::cache::BlockCache;
 use crate::storage::compaction::Compactor;
-use crate::storage::iterator::MergingScanner;
+use crate::storage::iterator::{MergingIter, MergingScanner};
 use crate::storage::memtable::MemTable;
 use crate::storage::sstable::{CompressionType, SsTable, SsTableBuilder};
 use crate::storage::wal::{WalConfig, WalRecovery, WalWriter};
@@ -30,7 +30,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             db_path: PathBuf::from("./data"),
-            memtable_max_bytes: 256 * 1024 * 1024, // 256 MB default
+            memtable_max_bytes: 64 * 1024 * 1024, // 64 MB default
             l0_compaction_trigger: 4,
             wal_config: WalConfig::default(),
         }
@@ -336,10 +336,19 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Force immediate flush of active MemTable
+    /// Force immediate flush of active MemTable and wait until all immutable MemTables are written to SSTable on disk
     pub async fn force_flush(&self) -> Result<()> {
         self.rotate_memtable().await?;
-        self.flush_notify.notify_waiters();
+        while let Some(imm) = {
+            let mut imm_guard = self.imm_memtables.write();
+            if !imm_guard.is_empty() {
+                Some(imm_guard.remove(0))
+            } else {
+                None
+            }
+        } {
+            self.flush_memtable_to_sstable(&imm).await?;
+        }
         Ok(())
     }
 
@@ -535,14 +544,26 @@ impl StorageEngine {
 
     /// Delete all records matching a filter query atomically in batch
     pub async fn del_where(&self, filter: &QueryFilter) -> Result<usize> {
-        let all_entries = self.scan(None, None, 1_000_000)?;
-        let mut del_ops = Vec::new();
+        let del_ops = {
+            let mem = self.memtable.read();
+            let imm = self.imm_memtables.read().clone();
+            let sst = self.sstables.read().clone();
 
-        for (key, val) in all_entries {
-            if filter.matches(&val) {
-                del_ops.push((key, None, OpType::Delete));
+            let iter = MergingIter::new(&mem, &imm, &sst, None, None);
+            let mut ops = Vec::new();
+
+            for (key, entry) in iter {
+                if self.is_expired(&key) {
+                    continue;
+                }
+                if let Some(val) = entry.value {
+                    if filter.matches(&val) {
+                        ops.push((key, None, OpType::Delete));
+                    }
+                }
             }
-        }
+            ops
+        };
 
         let count = del_ops.len();
         if count > 0 {
@@ -553,30 +574,52 @@ impl StorageEngine {
 
     /// Count matching records (or total records if no filter)
     pub fn count_records(&self, filter: Option<&QueryFilter>) -> Result<usize> {
-        let all_entries = self.scan(None, None, 1_000_000)?;
-        if let Some(f) = filter {
-            Ok(all_entries.into_iter().filter(|(_, val)| f.matches(val)).count())
-        } else {
-            Ok(all_entries.len())
+        let mem = self.memtable.read();
+        let imm = self.imm_memtables.read().clone();
+        let sst = self.sstables.read().clone();
+
+        let iter = MergingIter::new(&mem, &imm, &sst, None, None);
+        let mut count = 0usize;
+
+        for (key, entry) in iter {
+            if self.is_expired(&key) {
+                continue;
+            }
+            if let Some(val) = entry.value {
+                if filter.map_or(true, |f| f.matches(&val)) {
+                    count += 1;
+                }
+            }
         }
+
+        Ok(count)
     }
 
     /// Calculate statistical metrics (count, sum, avg, min, max) for a numeric field
     pub fn calc_stats(&self, field: &str, filter: Option<&QueryFilter>) -> Result<serde_json::Value> {
-        let all_entries = self.scan(None, None, 1_000_000)?;
+        let mem = self.memtable.read();
+        let imm = self.imm_memtables.read().clone();
+        let sst = self.sstables.read().clone();
+
+        let iter = MergingIter::new(&mem, &imm, &sst, None, None);
         let mut count = 0usize;
         let mut sum = 0.0f64;
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
 
-        for (_, val) in all_entries {
-            if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&val) {
-                if filter.map_or(true, |f| f.matches_value(&parsed)) {
-                    if let Some(num) = QueryFilter::extract_number(&parsed, field) {
-                        count += 1;
-                        sum += num;
-                        min = min.min(num);
-                        max = max.max(num);
+        for (key, entry) in iter {
+            if self.is_expired(&key) {
+                continue;
+            }
+            if let Some(val) = entry.value {
+                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&val) {
+                    if filter.map_or(true, |f| f.matches_value(&parsed)) {
+                        if let Some(num) = QueryFilter::extract_number(&parsed, field) {
+                            count += 1;
+                            sum += num;
+                            min = min.min(num);
+                            max = max.max(num);
+                        }
                     }
                 }
             }

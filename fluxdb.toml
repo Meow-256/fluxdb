@@ -20,11 +20,11 @@ max_threads = 8
 # Base persistent data directory
 data_dir = "./data"
 
-# Decompressed LRU Block Cache size in Megabytes (0 = OFF, e.g. 256 for 256MB)
-block_cache_mb = 256
+# Decompressed LRU Block Cache size in Megabytes (0 = OFF, e.g. 64 for 64MB)
+block_cache_mb = 64
 
 # Maximum RAM size for active MemTable before flushing to SSTable (in MB)
-memtable_size_mb = 256
+memtable_size_mb = 64
 
 # Number of L0 SSTable files before triggering background merge compaction
 compaction_trigger = 4

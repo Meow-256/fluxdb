@@ -20,8 +20,8 @@ impl MemTable {
     /// Insert or update an entry
     pub fn insert(&self, key: PlayerId, entry: ValueEntry) {
         let val_len = entry.value.as_ref().map(|v| v.len()).unwrap_or(0);
-        // 16B key + 16B seq/time + 8B entry struct + heap val
-        let added_size = 40 + val_len;
+        // 16B key + 40B ValueEntry + ~40-56B SkipMap node & pointer tower metadata + heap val
+        let added_size = 96 + val_len;
 
         self.map.insert(key, entry);
         self.approx_size_bytes.fetch_add(added_size, Ordering::Relaxed);
@@ -42,8 +42,8 @@ impl MemTable {
         self.map.iter().map(|entry| (*entry.key(), entry.value().clone()))
     }
 
-    /// Returns iterator over items within key bounds in sorted order
-    pub fn range(&self, start: Option<PlayerId>, end: Option<PlayerId>) -> Vec<(PlayerId, ValueEntry)> {
+    /// Returns iterator over items within key bounds in sorted order without collecting
+    pub fn range_iter(&self, start: Option<PlayerId>, end: Option<PlayerId>) -> impl Iterator<Item = (PlayerId, ValueEntry)> + '_ {
         use std::ops::Bound;
         let start_bound = match start {
             Some(k) => Bound::Included(k),
@@ -57,7 +57,11 @@ impl MemTable {
         self.map
             .range((start_bound, end_bound))
             .map(|entry| (*entry.key(), entry.value().clone()))
-            .collect()
+    }
+
+    /// Returns iterator over items within key bounds in sorted order
+    pub fn range(&self, start: Option<PlayerId>, end: Option<PlayerId>) -> Vec<(PlayerId, ValueEntry)> {
+        self.range_iter(start, end).collect()
     }
 
     /// Number of items

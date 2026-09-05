@@ -94,7 +94,7 @@ impl FieldIndex {
         let mut shards = Vec::with_capacity(NUM_SHARDS);
         for _ in 0..NUM_SHARDS {
             shards.push(ShardScores {
-                scores: RwLock::new(std::collections::HashMap::with_capacity(8192)),
+                scores: RwLock::new(std::collections::HashMap::new()),
             });
         }
         Self {
